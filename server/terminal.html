@@ -36,9 +36,12 @@
   <div id="blocked">⛔ Склад стоит: инбокс не был разобран. Разбери - и всё поедет.</div>
 
   <div class="card" id="mirror" style="display:none">
-    <b>🪞 Зеркало дня</b> <span style="color:var(--dim);font-size:12px">= всё, что ты записал сегодня (рефлексия)</span> - <span id="ptsbar">0 очков</span>
-    <div id="lenta"></div>
-    <div id="donebar"></div>
+    <b>🪞 Зеркало дня</b> <span id="ptsbar" style="color:var(--dim);font-size:12px">0 очков</span>
+    <div id="donebar" style="margin-top:4px"></div>
+    <details class="drawer" style="margin-top:10px">
+      <summary>Что записал сегодня (<span id="lentaCnt">0</span>) — развернуть</summary>
+      <div class="drawer-body"><div id="lenta"></div></div>
+    </details>
     <div style="display:flex;margin-top:16px"><button class="b-primary" onclick="startTriage()" id="gobtn">→ разбирать</button></div>
   </div>
 
@@ -49,8 +52,15 @@
     <div id="btns"></div>
     <div id="hint" style="margin-top:10px"></div>
     <div id="ctxrow">
-      <input id="ctx" placeholder="контекст: @дом, @комп, @звонки...">
+      <input id="ctx" placeholder="число дней, напр. 3">
       <button onclick="moveCtx()">→</button>
+    </div>
+    <div id="more" style="margin-top:10px">
+      <span id="moreArrow" style="cursor:pointer;color:var(--dim);font-size:12px" onclick="toggleMore()">▾ ещё</span>
+      <div id="moreRow" style="display:none;gap:8px;margin-top:8px">
+        <button class="b-ghost" style="flex:none;font-size:12.5px;padding:8px 12px" onclick="renameCur()">✏️ переименовать</button>
+        <button class="b-ghost" style="flex:none;font-size:12.5px;padding:8px 12px" id="streetBtn" onclick="streetCur()"></button>
+      </div>
     </div>
   </div>
   <div class="card" id="empty" style="display:none;text-align:center"><img class="empty-ill" src="/assets/empty-inbox.png" alt="">✨ Инбокс пуст. Склад дышит ровно.
@@ -64,8 +74,26 @@
 <script>
 "use strict";
 let queue=[], cur=null, focusN=0;
+// шкала - СВОЯ на каждый этап конвейера (не общая на весь инбокс): так короче
+// путь до полной заливки, и она реально ощущается как "загрузка", а не как
+// вечно недвижимый общий прогресс на 12+ товаров сразу.
+let stagePass=-1, stageTotal=0, stageDone=0;
+function enterStage(){
+  if(pass===stagePass)return;
+  stagePass=pass;
+  stageTotal=pass<PASSES.length?P[pass].items.length:0;
+  stageDone=0;
+}
+function loadBar(){
+  if(!window.WH_setLoadBar)return;
+  if(!stageTotal){window.WH_setLoadBar(100,pass<PASSES.length?`этап ${pass+1}/5 пуст`:'инбокс разобран');return}
+  const p=Math.round(stageDone/stageTotal*100);
+  window.WH_setLoadBar(p,`этап ${pass+1}/5: ${stageDone} из ${stageTotal}`);
+}
 const $=id=>document.getElementById(id);
-async function api(p,body){const r=await fetch(p,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});return r.json()}
+async function api(p,body){const r=await fetch(p,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});
+  if(!r.ok){let d='';try{d=(await r.json()).detail||''}catch(e){}throw new Error(d||('HTTP '+r.status))}
+  return r.json()}
 // журнал решений: каждый ответ триажа = строка датасета для будущей ИИ-предсортировки
 function logEv(kind,payload){try{navigator.sendBeacon('/event',
   new Blob([JSON.stringify({kind,payload})],{type:'application/json'}))}catch(e){}}
@@ -74,10 +102,20 @@ function beep(f,d){try{const a=beep.ac=beep.ac||new AudioContext(),o=a.createOsc
   o.start();g.gain.exponentialRampToValueAtTime(1e-4,a.currentTime+d);o.stop(a.currentTime+d)}catch(e){}}
 async function loadMirror(){
   const m=await api('/mirror');
-  $('ptsbar').textContent=m.points_total+' очков за сегодня';
+  $('ptsbar').textContent='· '+m.points_total+' очков за сегодня';
+  $('lentaCnt').textContent=m.boxes.length;
   $('lenta').innerHTML=m.boxes.map(b=>{
     const src={pc:'💻',phone:'📱',cli:'⌨️'}[b.source]||'·';
-    return `<div class="row"><span class="t">${b.born_at.slice(11,16)}</span><span>${src}</span><span>${esc(b.raw_text)}</span></div>`
+    // треш/сделано - визуально погашены: иначе зеркало выглядит как нерешённый
+    // бардак, хотя на деле уже разобрано (дубли-тесты и т.п.)
+    const gone=b.shelf==='trash'||b.shelf==='done'||b.shelf==='archived';
+    // каждая решённая коробка несёт метку своей полки - иначе лента выглядит
+    // как неразобранный инбокс, хотя всё давно уехало
+    const mark={trash:'🗑',done:'✅',archived:'✅',focus:'⭐',pallet_step:'🧱',
+                mind:'💭',waiting:'⏳',rack:'🗄'}[b.shelf]||'';
+    const style=gone?' style="opacity:.4;text-decoration:line-through"'
+               :b.shelf!=='inbox'?' style="opacity:.65"':'';
+    return `<div class="row"${style}><span class="t">${b.born_at.slice(11,16)}</span><span>${mark||src}</span><span>${esc(b.raw_text)}</span></div>`
   }).join('')||'<div class="row"><span class="t"></span><span>сегодня коробок не было</span></div>';
   const st=await api('/state');
   focusN=(st.counts&&st.counts.focus)||0;
@@ -88,6 +126,7 @@ function esc(s){const d=document.createElement('div');d.textContent=s;return d.i
 function renderGlow(){
   const b=glowQ[0];
   $('triage').style.display='block';$('empty').style.display='none';
+  $('more').style.display='none'; // редкие действия относятся к cur, не к glow-товару
   $('boxmeta').textContent=`✨ загорелось в ожидании · осталось ${glowQ.length}`;
   $('boxtext').textContent=b.raw_text;
   $('question').textContent='Дождался?';
@@ -96,7 +135,9 @@ function renderGlow(){
   [['✅ Готово','done'],['⏳ Жду дальше','wait'],['🗑 Протухло','delete']].forEach(([label,action])=>{
     const btn=document.createElement('button');
     btn.textContent=label;
-    btn.onclick=async()=>{glowQ.shift();await api('/wait_check',{id:b.id,action});
+    btn.onclick=async()=>{if(flying)return;flying=true;glowQ.shift();
+      try{await api('/wait_check',{id:b.id,action})}
+      catch(e){glowQ.unshift(b)} // не приняло - товар вернётся на экран
       beep(action==='done'?700:300,.12);flyNext()};
     $('btns').appendChild(btn);
   });
@@ -105,6 +146,7 @@ async function startTriage(){
   $('mirror').style.display='none';
   const items=await api('/boxes?shelf=inbox');
   items.reverse(); // старые первыми
+  items.sort((a,b)=>(a.grp==='meta')-(b.grp==='meta')); // мета-идеи (про сам склад) - отдельным хвостом, не мешают основному потоку
   glowQ=await api('/glow');
   startPasses(items);
 }
@@ -134,13 +176,23 @@ const PASSES=[
    a:[['💭 Мысль',x=>ship(x,'mind')],['🗑 Мусор',x=>ship(x,'trash')]]},
   {q:'Займёшься на этой неделе?',hint:'да → Фокус (делаю сейчас) · не сейчас → ещё один вопрос',
    a:[['✅ Да',x=>ship(x,'focus')],['🕰 Не сейчас',x=>route(x,4)]]},
-  {q:'Ждёшь другого человека?',hint:'да → Ожидание, напомнит само · нет → Отложенное, всплывёт на недельной пересборке',
-   a:[['⏳ Да, жду',x=>askWait(x)],['🚫 Нет',x=>askCtx(x)]]}
+  {q:'Ждёшь другого человека?',hint:'да → Ожидание, напомнит само · нет → Отложенное: 🤖 сам разложит по контекстам',
+   a:[['⏳ Да, жду',x=>askWait(x)],['🚫 Нет',x=>ship(x,'rack')]]}
 ];
+// авто-триаж: какой ответ на ТЕКУЩЕМ вопросе подсказывает фоновая LLM-классификация
+// (cur.ai_suggest = step|project|thought|trash, проставляется сервером асинхронно после захвата)
+const AI_HINT_LABEL={0:{step:'Дело',project:'Дело',thought:'Не дело',trash:'Не дело'},
+                      1:{step:'Один шаг',project:'Проект'},
+                      2:{thought:'Мысль',trash:'Мусор'}};
+const AI_HINT_INDEX={0:{step:0,project:0,thought:1,trash:1},
+                      1:{step:0,project:1},
+                      2:{thought:0,trash:1}};
 let hist=[];
 function route(item,toPass){
   hist.push({type:'route',item,fromPass:pass,toPass});
   P[toPass].items.push(item);
+  stageDone++; loadBar();
+  api('/triage_pass',{id:item.id,p:toPass}).catch(()=>{}); // персист - переживает reload
 }
 async function undo(){
   if(!hist.length)return;
@@ -156,20 +208,36 @@ async function undo(){
   }
   P[h.fromPass].items.unshift(h.item);
   pass=h.fromPass;
+  stagePass=-1; // форс пересчёт этапа заново после отмены (не подглядываем, честный 0%)
+  api('/triage_pass',{id:h.item.id,p:h.fromPass}).catch(()=>{}); // синхронизируем восстановленную позицию
   beep(260,.08);
   nextItem();
 }
 let P=PASSES.map(p=>({...p,items:[]}));
 let pass=0, glowQ=[], glowOnly=false;
+// замок на время улёта карточки: повторный клик/клавиша в эти 260мс раньше
+// снимал с очереди СЛЕДУЮЩИЙ товар, применяя к нему невиданный ответ
+let flying=false;
 function startPasses(items){
   P=PASSES.map(p=>({...p,items:[]}));
-  P[0].items=items; pass=0; hist=[]; nextItem();
+  // товары распределяются по СОХРАНЁННОЙ позиции в конвейере (triage_pass с сервера),
+  // а не всегда с прохода 0 - иначе reload посреди разбора стирает уже данные ответы
+  items.forEach(it=>{
+    const p=Math.min(Math.max(it.triage_pass||0,0),PASSES.length-1);
+    P[p].items.push(it);
+  });
+  pass=0; hist=[]; stagePass=-1;
+  window.WH_LOADBAR_OWNED=true; // с этого момента шкала = прогресс разбора, не часы дня
+  nextItem();
 }
 function nextItem(){
+  flying=false;
   $('ctxrow').style.display='none';
   $('undorow').style.display=hist.length?'block':'none';
   while(pass<P.length && P[pass].items.length===0) pass++;
+  enterStage(); loadBar();
   if(pass>=P.length){
+    $('btns').innerHTML=''; // иначе клавиши 1-4 кликают устаревшие кнопки на пустом экране
     if(glowQ.length){renderGlow();return}
     if(glowOnly){ // пришли только за ожиданием - назад к зеркалу, инбокс мог быть непуст
       glowOnly=false;history.replaceState(null,'',location.pathname);
@@ -177,20 +245,30 @@ function nextItem(){
     $('triage').style.display='none';$('empty').style.display='block';loadMirror();return}
   cur=P[pass].items[0];
   $('triage').style.display='block';$('empty').style.display='none';
+  $('more').style.display='block';resetMore();syncStreetBtn();
   const src={pc:'💻',phone:'📱',cli:'⌨️'}[cur.source]||'·';
   $('boxmeta').textContent=`проход ${pass+1}/5 · #${cur.id} ${src} · в пачке ещё ${P[pass].items.length}`;
   $('boxtext').textContent=cur.raw_text;
   $('question').textContent=P[pass].q;
   let hint=P[pass].hint||'';
   if(pass===3&&focusN>=5)hint+=` · ⚠ фокус уже полон (${focusN}/5) — честнее «не сейчас»`;
+  if(cur.loop_count>=2)hint+=` · 🔁 уже ${cur.loop_count}× возвращал(а) в инбокс — реши сейчас, не откручивай снова`;
+  const aiLabel=(AI_HINT_LABEL[pass]||{})[cur.ai_suggest];
+  if(aiLabel)hint+=` · 🤖 похоже: ${aiLabel}`;
   $('hint').textContent=hint;
   $('btns').innerHTML='';
-  P[pass].a.forEach(([label,fn])=>{
+  const aiIdx=(AI_HINT_INDEX[pass]||{})[cur.ai_suggest];
+  P[pass].a.forEach(([label,fn],i)=>{
     const b=document.createElement('button');
     b.textContent=label;
-    b.onclick=()=>{P[pass].items.shift();beep(420,.05);
+    if(i===aiIdx)b.style.outline='2px solid var(--accent)';
+    b.onclick=()=>{if(flying)return;flying=true;beep(420,.05);
       logEv('triage_answer',{box:cur.id,text:cur.raw_text,pass:pass+1,q:P[pass].q,a:label});
-      fn(cur);flyNext()};
+      // fn===false → ответ открыл доп-вопрос (ожидание/контекст): товар ОСТАЁТСЯ
+      // в очереди до финального решения. Раньше его снимали сразу и flyNext стирал
+      // доп-вопрос - /move не отправлялся, коробка вечно возвращалась в инбокс.
+      if(fn(cur)===false){flying=false;return}
+      P[pass].items.shift();flyNext()};
     $('btns').appendChild(b);
   });
   // тихие быстрые выходы с любого прохода: уже сделано / выкинуть (клавиши 3-4)
@@ -198,7 +276,7 @@ function nextItem(){
     const b=document.createElement('button');
     b.textContent=label;b.className='b-ghost';b.style.cssText='flex:none;font-size:12.5px;padding:8px 12px';
     b.title=shelf==='done'?'сделано вне системы - в отгрузку, +3':'не буду делать / не нужно - в мусор';
-    b.onclick=()=>{P[pass].items.shift();
+    b.onclick=()=>{if(flying)return;flying=true;P[pass].items.shift();
       logEv('triage_answer',{box:cur.id,text:cur.raw_text,pass:pass+1,q:P[pass].q,a:label});
       ship(cur,shelf);flyNext()};
     $('btns').appendChild(b);
@@ -208,9 +286,52 @@ function flyNext(){
   $('triage').classList.add('fly');
   setTimeout(()=>{$('triage').classList.remove('fly');nextItem()},260);
 }
+// свёрнутые редкие действия (▾): переименовать / вручную в контекст улицы.
+// Ручной выбор улицы сильнее LLM (street_manual) - пересборка его не перекинет.
+function toggleMore(){
+  const r=$('moreRow'),open=r.style.display!=='none';
+  r.style.display=open?'none':'flex';
+  $('moreArrow').textContent=open?'▾ ещё':'▴ скрыть';
+}
+function resetMore(){
+  $('moreRow').style.display='none';$('moreArrow').textContent='▾ ещё';
+}
+function syncStreetBtn(){
+  $('streetBtn').textContent=cur&&cur.street?'🚶 уличная ✓ · убрать':'🚶 На улицу';
+}
+async function renameCur(){
+  if(!cur)return;
+  const t=prompt('Новое название коробки:',cur.raw_text);
+  if(!t||!t.trim()||t.trim()===cur.raw_text)return;
+  try{
+    const r=await api('/rename',{id:cur.id,text:t.trim()});
+    cur.raw_text=t.trim();if(r.street)cur.street=1;
+    $('boxtext').textContent=cur.raw_text;syncStreetBtn();beep(500,.08);loadMirror();
+  }catch(e){$('hint').textContent='⚠ не переименовалось ('+e.message+')'}
+}
+async function streetCur(){
+  if(!cur)return;
+  const v=cur.street?0:1;
+  try{await api('/street_mark',{id:cur.id,street:v});
+    cur.street=v;syncStreetBtn();beep(v?620:300,.08)}
+  catch(e){$('hint').textContent='⚠ не отметилось ('+e.message+')'}
+}
 async function ship(item,shelf,ctx,extra){
-  hist.push({type:'ship',item,fromPass:pass});
-  const r=await api('/move',{id:item.id,to:shelf,context:ctx||null,...(extra||{})});
+  const fromPass=pass;
+  hist.push({type:'ship',item,fromPass});
+  let r;
+  try{r=await api('/move',{id:item.id,to:shelf,context:ctx||null,...(extra||{})})}
+  catch(e){
+    // сервер не принял: вернуть товар в очередь, иначе он пропадёт из UI,
+    // оставшись в БД - и "разобранный" инбокс воскреснет при следующем заходе
+    hist.pop();
+    P[fromPass].items.unshift(item);
+    pass=Math.min(pass,fromPass);stagePass=-1;
+    nextItem();
+    $('hint').textContent='⚠ не уехало ('+e.message+') — ответь ещё раз';
+    return;
+  }
+  stageDone++; loadBar();
   beep(shelf==='trash'?180:560,.12);
   if(r.points>=10)beep(880,.3);
   loadMirror();
@@ -225,7 +346,8 @@ function askWait(item){
     const b=document.createElement('button');
     b.textContent=label;
     b.onclick=()=>{
-      if(extra){ship(item,'waiting',null,extra);flyNext()}
+      if(flying)return;
+      if(extra){flying=true;P[pass].items.shift();ship(item,'waiting',null,extra);flyNext()}
       else{
         $('btns').innerHTML='';$('question').textContent='Каждые сколько дней?';
         $('ctxrow').style.display='flex';
@@ -236,24 +358,18 @@ function askWait(item){
     };
     $('btns').appendChild(b);
   });
+  return false; // товар не снят: ждём выбора режима напоминаний
 }
-function askCtx(item){
-  $('btns').innerHTML='';$('question').textContent='Какой контекст?';
-  $('hint').textContent='контекст = где это делается (@дом, @комп, @звонки) · коробка ляжет в Отложенное и всплывёт на пересборке';
-  $('ctxrow').style.display='flex';$('ctx').focus();
-  $('ctxrow').dataset.id=item.id;
-  window._ctxItem=item;
-}
+// контекст у Отложенного больше не спрашивается: коробки едут на стеллаж как есть,
+// сервер после затишья сам пересоберёт весь стеллаж в контексты (автоконтекстуализация)
 function moveCtx(){
+  if(flying)return;
   const inp=$('ctx'), v=inp.value.trim();
-  if(!v)return;
-  if(inp.dataset.mode==='waitdays'){
-    const n=parseInt(v,10); if(!n||n<1)return;
-    ship(window._ctxItem,'waiting',null,{wait_mode:'every',wait_days:n});
-  }else{
-    ship(window._ctxItem,'rack',v);
-  }
-  inp.value='';delete inp.dataset.mode;inp.placeholder='контекст: @дом, @комп, @звонки...';
+  if(!v||inp.dataset.mode!=='waitdays')return;
+  const n=parseInt(v,10); if(!n||n<1)return;
+  flying=true;P[pass].items.shift();
+  ship(window._ctxItem,'waiting',null,{wait_mode:'every',wait_days:n});
+  inp.value='';delete inp.dataset.mode;
   flyNext();
 }
 document.addEventListener('keydown',e=>{
