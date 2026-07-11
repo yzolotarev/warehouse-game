@@ -29,7 +29,9 @@
 </head>
 <body><div id="wrap">
   <h1>🗄 Отложенное <span style="color:var(--dim);font-weight:normal">= сделаю позже, не на этой неделе (стеллажи)</span></h1>
-  <div id="sub">по одному товару: берёшь в работу, оставляешь лежать или выкидываешь</div>
+  <div id="sub">по одному товару: берёшь в работу, оставляешь лежать или выкидываешь
+    <span id="rcbtn" style="cursor:pointer;color:var(--accent);white-space:nowrap" onclick="recontext()" title="LLM пересоберёт весь стеллаж в контексты">· 🤖 пересобрать контексты</span></div>
+  <div id="rcline" style="display:none;color:var(--dim);font-size:13px;margin-bottom:12px"></div>
   <div id="banner" onclick="location.href='/terminal'">⛔ Склад стоит: разбери инбокс →</div>
   <div id="stage"></div>
   <a href="/">← в прихожую склада</a>
@@ -52,18 +54,67 @@ async function load(){
   items.sort((a,b)=>(a.context||'я').localeCompare(b.context||'я')||a.id-b.id);
   render();
 }
+// автоконтекстуализация: контексты не вводятся руками - сервер сам пересобирает
+// стеллаж (по затишью после триажа или по кнопке 🤖); тут только статус и опрос
+async function recontext(){
+  try{await api('/recontext',{})}catch(e){}
+  pollRc(true);
+}
+async function pollRc(active){
+  let st; try{st=await api('/recontext_status')}catch(e){return}
+  const line=$('#rcline');
+  if(st.running){
+    line.style.display='block';line.textContent='🤖 пересобираю контексты…';
+    setTimeout(()=>pollRc(active),4000);return}
+  if(st.dirty){
+    line.style.display='block';line.textContent='🤖 контексты пересоберутся после затишья';
+    setTimeout(()=>pollRc(false),15000)}
+  else if(st.last&&st.last.ok){
+    line.style.display='block';
+    line.textContent='🤖 контексты от '+st.last.at.slice(11,16)+': '+st.last.contexts.join(' · ')}
+  else if(st.last&&!st.last.ok){
+    line.style.display='block';line.textContent='🤖 не вышло: '+st.last.error}
+  if(active)load(); // прогон закончился - показать свежую раскладку
+}
 function render(){
   if(!items.length){$('#stage').innerHTML='<div class="card muted">Стеллажи пусты. Всё либо в деле, либо сделано. ✨</div>';return}
   const b=items[0];
   const age=Math.round((Date.now()-new Date(b.born_at))/864e5);
   $('#stage').innerHTML=`<div class="card in" id="c">
-    <div class="ctx">${esc(b.context||'без контекста')}</div>
+    <div class="ctx">${esc(b.context||'🤖 контекст в пути')}</div>
     <div class="meta">#${b.id} · лежит ${age} дн. · на стеллажах ещё ${items.length}</div>
     <div class="task">${esc(b.raw_text)}</div>
     <button class="b-primary" onclick="act('focus')">🎯 В фокус</button>
     <button onclick="skip()">Лежит дальше ›</button>
     <button class="b-danger" onclick="act('trash')">🗑</button>
+    <div style="margin-top:12px">
+      <span id="mArr" style="cursor:pointer;color:var(--dim);font-size:12px" onclick="toggleMore()">▾ ещё</span>
+      <div id="mRow" style="display:none;margin-top:8px">
+        <button class="b-ghost" style="font-size:12.5px;padding:8px 12px" onclick="renameCur()">✏️ переименовать</button>
+        <button class="b-ghost" style="font-size:12.5px;padding:8px 12px" onclick="streetCur()">${b.street?'🚶 уличная ✓ · убрать':'🚶 На улицу'}</button>
+      </div>
+    </div>
   </div>`;
+}
+// свёрнутые редкие действия: переименовать / вручную в контекст улицы
+// (ручной выбор сильнее LLM - пересборка стеллажа его уважает)
+function toggleMore(){
+  const r=$('#mRow'),open=r.style.display!=='none';
+  r.style.display=open?'none':'block';
+  $('#mArr').textContent=open?'▾ ещё':'▴ скрыть';
+}
+async function renameCur(){
+  const b=items[0];if(!b)return;
+  const t=prompt('Новое название:',b.raw_text);
+  if(!t||!t.trim()||t.trim()===b.raw_text)return;
+  try{await api('/rename',{id:b.id,text:t.trim()});b.raw_text=t.trim();beep(500,.08);render()}catch(e){}
+}
+async function streetCur(){
+  const b=items[0];if(!b)return;
+  const v=b.street?0:1;
+  try{await api('/street_mark',{id:b.id,street:v});
+    b.street=v;if(v)b.context='🚶 Улица';else b.context=null;
+    beep(v?620:300,.08);render()}catch(e){}
 }
 function skip(){
   const c=$('#c');c.classList.add('flyl');beep(300,.06);
@@ -79,7 +130,7 @@ async function act(to){
 document.addEventListener('keydown',e=>{
   if(e.key==='1')act('focus'); if(e.key==='2')skip(); if(e.key==='3')act('trash');
 });
-load();
+load();pollRc(false);
 </script>
 </body>
 </html>

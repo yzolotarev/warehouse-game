@@ -11,7 +11,9 @@ import urllib.request
 from pathlib import Path
 
 TOKEN_FILE = Path.home() / ".config/warehouse/tg_token"
+CHAT_FILE = Path.home() / ".config/warehouse/tg_chat"   # его читает сервер для закрепа «🚶 Улица»
 SERVER = "http://127.0.0.1:8091/inbox"
+STREET_URL = "http://127.0.0.1:8091/street"
 STATE = Path.home() / ".local/share/warehouse/tg_offset"
 
 
@@ -32,6 +34,17 @@ def to_inbox(text):
         return json.load(r)["id"]
 
 
+def street_reply():
+    """Актуальный список «🚶 Улица» по запросу (сервер сам держит и закреп)."""
+    with urllib.request.urlopen(STREET_URL, timeout=5) as r:
+        rows = json.load(r)
+    if not rows:
+        return "🚶 Улица: пусто. Гуляй налегке ✨"
+    icons = {"focus": "🎯", "inbox": "📥", "rack": "🗄", "waiting": "⏳", "pallet_step": "🧱"}
+    return f"🚶 Улица — {len(rows)}:\n" + "\n".join(
+        f"{icons.get(b['shelf'], '•')} {b['raw_text']}" for b in rows)
+
+
 def main():
     if not TOKEN_FILE.exists():
         sys.exit(f"Нет токена: {TOKEN_FILE}. Создай бота у @BotFather и положи токен туда.")
@@ -49,8 +62,21 @@ def main():
                 text = (msg.get("text") or "").strip()
                 if not text:
                     continue
+                chat_id = msg["chat"]["id"]
+                # сервер использует chat_id для закрепа «🚶 Улица»
+                CHAT_FILE.parent.mkdir(parents=True, exist_ok=True)
+                CHAT_FILE.write_text(str(chat_id))
+                low = text.lower().lstrip("/")
+                if low in ("start", "help"):
+                    api(token, "sendMessage", chat_id=chat_id, text=(
+                        "📦 Склад на связи. Любое сообщение = коробка в инбокс.\n"
+                        "/улица - список уличных задач (он же висит в закрепе)"))
+                    continue
+                if low in ("улица", "street", "ул"):
+                    api(token, "sendMessage", chat_id=chat_id, text=street_reply())
+                    continue
                 box_id = to_inbox(text)
-                api(token, "sendMessage", chat_id=msg["chat"]["id"],
+                api(token, "sendMessage", chat_id=chat_id,
                     text=f"📦 #{box_id} в инбоксе")
         except Exception as e:
             print(f"[tg_worker] {e}", flush=True)

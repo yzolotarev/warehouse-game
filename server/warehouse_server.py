@@ -4,12 +4,16 @@
 Владеет БД коробок. Единственный источник истины.
 API: POST /inbox, GET /boxes, POST /move, GET /health
 """
+import difflib
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import threading
 import time
+import urllib.error
+import urllib.request
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -133,6 +137,20 @@ def init_db():
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(boxes)")}
         if "starred" not in cols:
             conn.execute("ALTER TABLE boxes ADD COLUMN starred INTEGER NOT NULL DEFAULT 0")
+        if "ai_suggest" not in cols:
+            conn.execute("ALTER TABLE boxes ADD COLUMN ai_suggest TEXT")
+        if "triage_pass" not in cols:
+            # позиция в конвейере триажа (0-4) - переживает reload/undo, чтобы
+            # промежуточные ответы ("Это дело?" и т.п.) не терялись при перезагрузке
+            conn.execute("ALTER TABLE boxes ADD COLUMN triage_pass INTEGER NOT NULL DEFAULT 0")
+        if "street" not in cols:
+            # уличная задача (забрать заказ, купить, отнести) - попадает в
+            # закреп «🚶 Улица» в Telegram; ставится автоматом, руками не вводится
+            conn.execute("ALTER TABLE boxes ADD COLUMN street INTEGER NOT NULL DEFAULT 0")
+        if "street_manual" not in cols:
+            # человек руками выбрал контекст улицы - его решение сильнее LLM:
+            # пересборка стеллажа не смеет перекинуть такую коробку в другой контекст
+            conn.execute("ALTER TABLE boxes ADD COLUMN street_manual INTEGER NOT NULL DEFAULT 0")
         pcols = {r["name"] for r in conn.execute("PRAGMA table_info(pallets)")}
         if "note_path" not in pcols:
             conn.execute("ALTER TABLE pallets ADD COLUMN note_path TEXT")
@@ -176,21 +194,394 @@ class Move(BaseModel):
     wait_days: int | None = None  # для every: каждые N дней
 
 
+# мета-бэклог: идеи ПРО САМ склад/инструменты для его правки - не мешают
+# основному потоку триажа, батчатся отдельным хвостом (см. startTriage в terminal.html)
+META_KEYWORDS = ("склад", "инбокс", "паллет", "триаж", "claude", "openclaude", "mcp",
+                  "graphify", "gemini", "web2api", "датасет", "dashboard", "mindmap")
+
+
+def _is_meta(text):
+    t = text.lower()
+    return any(k in t for k in META_KEYWORDS)
+
+
+def _find_similar_trashed(conn, text, threshold=0.62):
+    """Антидубликат: локальный fuzzy-match без LLM/эмбеддингов - не блокирует
+    захват, только мягкая подсказка "ты это уже выкидывал"."""
+    t = text.lower().strip()
+    rows = conn.execute(
+        "SELECT id, raw_text FROM boxes WHERE shelf='trash' "
+        "AND born_at >= datetime('now','-30 days') ORDER BY born_at DESC LIMIT 200").fetchall()
+    best = None
+    for r in rows:
+        ratio = difflib.SequenceMatcher(None, t, r["raw_text"].lower().strip()).ratio()
+        if ratio >= threshold and (not best or ratio > best[1]):
+            best = (r, ratio)
+    return best[0] if best else None
+
+
+AI_SUGGEST_VOCAB = {"ШАГ": "step", "ПРОЕКТ": "project", "МЫСЛЬ": "thought", "МУСОР": "trash"}
+
+# уличные задачи: regex-страховка (мгновенно, без LLM) + LLM уточняет при классификации
+STREET_RE = re.compile(
+    r"забрать|заказ|доставк|купить|магазин|аптек|почт[аеуы]|\bмфц\b|отнести|"
+    r"вернуть заказ|сходить|съездить|вынести|банкомат|шиномонтаж|парикмахер|барбер",
+    re.IGNORECASE)
+
+
+def _ai_classify_box(box_id, text):
+    """Авто-триаж: фоновая LLM-предподготовка (единственное место, где комфорт
+    склада реально тратит web2api). Fire-and-forget - при любой ошибке/недоступности
+    бэкенда просто не проставляет подсказку, триаж работает как обычно."""
+    try:
+        r = subprocess.run(
+            ["llm-brains", "--backend", "web2api", "--max-tokens", "20",
+             "--system",
+             "Классифицируешь короткие заметки личного таск-трекера. "
+             "Ответь СТРОГО двумя словами через пробел, без пояснений. "
+             "Первое слово: "
+             "ШАГ (конкретное дело, можно сделать за один присест), "
+             "ПРОЕКТ (дело из нескольких шагов или пока неясно как), "
+             "МЫСЛЬ (не дело - наблюдение, ссылка, идея на будущее), "
+             "МУСОР (случайный шум). "
+             "Второе слово: УЛИЦА (задача требует физически выйти из дома: "
+             "забрать, купить, отнести, сходить) или ДОМА.",
+             text],
+            capture_output=True, text=True, timeout=200)  # web2api - веб-скрейпинг, не API: измерено 30-60с+ на реальных промптах
+        if r.returncode != 0:
+            print(f"[ai_classify] #{box_id} llm-brains rc={r.returncode} stderr={r.stderr[:300]!r}")
+            return
+        answer = r.stdout.strip().upper()
+        kind = next((v for k, v in AI_SUGGEST_VOCAB.items() if k in answer), None)
+        if not kind:
+            print(f"[ai_classify] #{box_id} unparsed answer={r.stdout[:200]!r}")
+            return
+        street = 1 if "УЛИЦА" in answer else 0
+        with db() as conn:
+            # street только повышается (regex при захвате мог уже поставить 1)
+            conn.execute("UPDATE boxes SET ai_suggest=?, street=MAX(street,?) "
+                         "WHERE id=? AND shelf='inbox'", (kind, street, box_id))
+            if street:
+                set_flag(conn, "street_dirty",
+                         datetime.now().isoformat(timespec="seconds"))
+        print(f"[ai_classify] #{box_id} -> {kind}{' УЛИЦА' if street else ''}")
+    except Exception as e:
+        print(f"[ai_classify] #{box_id} exception: {e!r}")
+
+
+# ─── Автоконтекстуализация стеллажа (перенос «сообщающихся сосудов» из Отложки) ──
+# Человек контексты не вводит вообще: LLM периодически пересобирает ВЕСЬ стеллаж
+# в 2-6 эмерджентных контекстов под фактическое содержимое. Модель отдаёт только
+# структуру (ID → контекст), тексты коробок не трогаются; каждый класс ошибок LLM
+# гасится детерминированной страховкой (пропущенная коробка сохраняет старый контекст).
+RECONTEXT_DEBOUNCE_S = 120   # тишина после последнего приезда на стеллаж перед прогоном
+RECONTEXT_MIN_BOXES = 2
+_recontext_running = threading.Lock()
+STREET_CTX = "🚶 Улица"   # канонический контекст: из него собирается TG-закреп для улицы
+
+
+def _recontext_prompt(texts):
+    lines = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(texts))
+    return (
+        "Ты - система группировки отложенных задач. Верни ТОЛЬКО JSON строго по схеме:\n"
+        '{"contexts": [{"title": "Название контекста с эмодзи", "ids": [1, 2]}]}\n\n'
+        "ПРАВИЛА:\n"
+        f"1. Каждый ID от 1 до {len(texts)} - ровно один раз.\n"
+        "2. Создай 2-6 контекстов по смыслу задач. Если задача не вписывается - "
+        "создай для неё новый контекст, НЕ сваливай в «Разное».\n"
+        "3. title - короткий (2-4 слова), один эмодзи в начале, без Markdown.\n"
+        "4. Похожие задачи (один инструмент/тема/место) - в один контекст.\n"
+        f"5. ВАЖНО: задачи, требующие выйти из дома (забрать заказ, купить, отнести, "
+        f"сходить/съездить куда-то физически) - в контекст ровно с названием «{STREET_CTX}».\n"
+        "6. Никаких пояснений, только JSON.\n\n"
+        f"ЗАДАЧИ:\n{lines}"
+    )
+
+
+def _extract_json(raw):
+    """LLM может обернуть JSON в ```-заборы или прозу - берём первый {...} блок."""
+    m = re.search(r"\{.*\}", raw, re.DOTALL)
+    if not m:
+        raise ValueError(f"нет JSON в ответе: {raw[:200]!r}")
+    return json.loads(m.group())
+
+
+def _recontextualize_rack():
+    """Полный прогон: стеллаж → LLM → новые контексты. Фон, 30-120с на web2api."""
+    if not _recontext_running.acquire(blocking=False):
+        return  # уже идёт
+    try:
+        with db() as conn:
+            set_flag(conn, "recontext_dirty", "")
+            rows = conn.execute(
+                "SELECT id, raw_text, street_manual FROM boxes "
+                "WHERE shelf='rack' ORDER BY id").fetchall()
+        if len(rows) < RECONTEXT_MIN_BOXES:
+            return
+        ids = [r["id"] for r in rows]
+        texts = [r["raw_text"] for r in rows]
+        r = subprocess.run(
+            ["llm-brains", "--max-tokens", "1500", _recontext_prompt(texts)],
+            capture_output=True, text=True, timeout=300)
+        if r.returncode != 0:
+            raise RuntimeError(f"llm-brains rc={r.returncode}: {r.stderr[:200]}")
+        data = _extract_json(r.stdout)
+        # страховки: только int-ID в диапазоне, каждый один раз, чистый title
+        seen, assign = set(), {}   # assign: box_id → контекст
+        for ctx in data.get("contexts", []):
+            if not isinstance(ctx, dict):
+                continue
+            title = re.sub(r"[*_`#\[\]{}]", "", str(ctx.get("title", ""))).strip()
+            if not title:
+                continue
+            for raw_i in (ctx.get("ids") or ctx.get("task_ids") or []):
+                try:
+                    i = int(raw_i)
+                except (TypeError, ValueError):
+                    continue
+                if 1 <= i <= len(ids) and i not in seen:
+                    seen.add(i)
+                    assign[ids[i - 1]] = title
+        if not assign:
+            raise ValueError("LLM не вернула ни одного валидного контекста")
+        # keyword-override (страховка как в отложке): уличные по ключевым словам
+        # или по ручному выбору человека едут в канонический контекст,
+        # даже если LLM решила иначе
+        by_id = {r["id"]: r["raw_text"] for r in rows}
+        manual = {r["id"] for r in rows if r["street_manual"]}
+        for box_id in list(assign):
+            if box_id in manual or STREET_RE.search(by_id.get(box_id, "")):
+                assign[box_id] = STREET_CTX
+        with db() as conn:
+            for box_id, title in assign.items():
+                # коробка могла уехать со стеллажа, пока LLM думала - не трогаем;
+                # street на стеллаже следует за контекстом (свежайшее суждение)
+                conn.execute("UPDATE boxes SET context=?, street=? "
+                             "WHERE id=? AND shelf='rack'",
+                             (title, 1 if title == STREET_CTX else 0, box_id))
+                conn.execute("INSERT OR IGNORE INTO racks(context) VALUES(?)", (title,))
+            set_flag(conn, "street_dirty", datetime.now().isoformat(timespec="seconds"))
+            # адаптивность: контексты умирают вместе с последней коробкой
+            conn.execute("DELETE FROM racks WHERE context NOT IN "
+                         "(SELECT DISTINCT context FROM boxes WHERE shelf='rack' "
+                         "AND context IS NOT NULL)")
+            titles = sorted(set(assign.values()))
+            set_flag(conn, "recontext_state", json.dumps(
+                {"at": datetime.now().isoformat(timespec="seconds"), "ok": True,
+                 "boxes": len(assign), "contexts": titles, "fails": 0}, ensure_ascii=False))
+            log_event(conn, "recontext", boxes=len(assign), contexts=titles,
+                      skipped=len(ids) - len(assign))
+        notify("🗄 Стеллаж пересобран", " · ".join(titles))
+    except Exception as e:
+        with db() as conn:
+            try:
+                fails = json.loads(get_flag(conn, "recontext_state") or "{}").get("fails", 0) + 1
+            except ValueError:
+                fails = 1
+            set_flag(conn, "recontext_state", json.dumps(
+                {"at": datetime.now().isoformat(timespec="seconds"), "ok": False,
+                 "error": str(e)[:200], "fails": fails}, ensure_ascii=False))
+            if fails < 3:
+                # ретрай через дебаунс-паузу; после 3 фейлов подряд затихаем
+                # до следующего приезда коробки или ручной кнопки 🤖
+                set_flag(conn, "recontext_dirty",
+                         datetime.now().isoformat(timespec="seconds"))
+            log_event(conn, "recontext_fail", error=str(e)[:300], fails=fails)
+    finally:
+        _recontext_running.release()
+
+
+@app.post("/recontext")
+def recontext_now():
+    """Ручной запуск пересборки контекстов стеллажа (идёт в фоне)."""
+    if not _recontext_running.locked():
+        threading.Thread(target=_recontextualize_rack, daemon=True).start()
+    return {"ok": True, "running": True}
+
+
+@app.get("/recontext_status")
+def recontext_status():
+    with db() as conn:
+        dirty = get_flag(conn, "recontext_dirty")
+        state = get_flag(conn, "recontext_state")
+    return {"running": _recontext_running.locked(), "dirty": bool(dirty),
+            "last": json.loads(state) if state else None}
+
+
+# ─── Список «🚶 Улица» → закреп в Telegram ────────────────────────────────────
+# Уличные задачи должны быть видны С ТЕЛЕФОНА вне дома: бот держит в личном чате
+# ОДНО закреплённое сообщение и молча редактирует его при каждом изменении списка.
+# chat_id пишет tg_worker при первом сообщении боту.
+TG_TOKEN_FILE = Path.home() / ".config/warehouse/tg_token"
+TG_CHAT_FILE = Path.home() / ".config/warehouse/tg_chat"
+STREET_SHELVES = ("focus", "inbox", "rack", "waiting", "pallet_step")
+_street_syncing = threading.Lock()
+
+
+def _street_rows(conn):
+    marks = ",".join("?" * len(STREET_SHELVES))
+    return conn.execute(
+        f"SELECT * FROM boxes WHERE street=1 AND shelf IN ({marks}) "
+        "ORDER BY CASE shelf WHEN 'focus' THEN 0 WHEN 'inbox' THEN 1 "
+        "WHEN 'waiting' THEN 2 WHEN 'pallet_step' THEN 3 ELSE 4 END, id",
+        STREET_SHELVES).fetchall()
+
+
+@app.get("/street")
+def street_list():
+    with db() as conn:
+        return [dict(r) for r in _street_rows(conn)]
+
+
+class Rename(BaseModel):
+    id: int
+    text: str
+
+
+@app.post("/rename")
+def rename_box(r: Rename):
+    """Задачи мутируют по ходу жизни («чекни авито» → «забрать заказ самому») -
+    название должно уметь меняться, история остаётся в events."""
+    text = r.text.strip()
+    if not text:
+        raise HTTPException(400, "empty text")
+    with db() as conn:
+        row = conn.execute("SELECT raw_text, street FROM boxes WHERE id=?",
+                           (r.id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "no such box")
+        # новое название может сделать задачу уличной; вниз автоматом не снимаем
+        street = row["street"] or (1 if STREET_RE.search(text) else 0)
+        conn.execute("UPDATE boxes SET raw_text=?, street=? WHERE id=?",
+                     (text, street, r.id))
+        if street or row["street"]:
+            set_flag(conn, "street_dirty", datetime.now().isoformat(timespec="seconds"))
+        log_event(conn, "rename", id=r.id, old=row["raw_text"], new=text)
+    return {"ok": True, "street": street}
+
+
+class StreetMark(BaseModel):
+    id: int
+    street: int = 1
+
+
+@app.post("/street_mark")
+def street_mark(s: StreetMark):
+    """Ручной выбор контекста улицы (или снятие). Ручное решение сильнее LLM."""
+    val = 1 if s.street else 0
+    with db() as conn:
+        row = conn.execute("SELECT shelf FROM boxes WHERE id=?", (s.id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "no such box")
+        conn.execute("UPDATE boxes SET street=?, street_manual=? WHERE id=?",
+                     (val, val, s.id))
+        if row["shelf"] == "rack":
+            if val:
+                conn.execute("UPDATE boxes SET context=? WHERE id=?", (STREET_CTX, s.id))
+                conn.execute("INSERT OR IGNORE INTO racks(context) VALUES(?)", (STREET_CTX,))
+            else:
+                # сняли улицу на стеллаже - контекст переопределит ближайшая пересборка
+                conn.execute("UPDATE boxes SET context=NULL WHERE id=?", (s.id,))
+                set_flag(conn, "recontext_dirty",
+                         datetime.now().isoformat(timespec="seconds"))
+        set_flag(conn, "street_dirty", datetime.now().isoformat(timespec="seconds"))
+        log_event(conn, "street_mark", id=s.id, street=val, manual=True)
+    return {"ok": True, "street": val}
+
+
+def _tg_api(method, **params):
+    token = TG_TOKEN_FILE.read_text().strip()
+    req = urllib.request.Request(
+        f"https://api.telegram.org/bot{token}/{method}",
+        data=json.dumps(params).encode(),
+        headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return json.load(r)
+
+
+def street_text(rows):
+    if not rows:
+        return "🚶 Улица: пусто. Гуляй налегке ✨"
+    icons = {"focus": "🎯", "inbox": "📥", "rack": "🗄", "waiting": "⏳", "pallet_step": "🧱"}
+    lines = [f"🚶 Улица — {len(rows)}:"]
+    for r in rows:
+        lines.append(f"{icons.get(r['shelf'], '•')} {r['raw_text']}")
+    lines.append(f"\nобновлено {datetime.now().strftime('%d.%m %H:%M')}")
+    return "\n".join(lines)
+
+
+def _sync_street_tg():
+    """Обновить закреп «🚶 Улица» в TG. Редактирование - тихое, без уведомлений."""
+    if not (TG_TOKEN_FILE.exists() and TG_CHAT_FILE.exists()):
+        return  # бот ещё не подключён: флаг подождёт, синк догонит после настройки
+    if not _street_syncing.acquire(blocking=False):
+        return
+    try:
+        with db() as conn:
+            set_flag(conn, "street_dirty", "")
+            rows = _street_rows(conn)
+            msg_id = get_flag(conn, "tg_street_msg")
+        text = street_text(rows)
+        chat = TG_CHAT_FILE.read_text().strip()
+        if msg_id:
+            try:
+                _tg_api("editMessageText", chat_id=chat, message_id=int(msg_id), text=text)
+                return
+            except urllib.error.HTTPError as e:
+                if "message is not modified" in e.read().decode(errors="replace"):
+                    return  # список не изменился - это не ошибка
+                # закреп удалён/недоступен - перевыставляем новым сообщением ниже
+        r = _tg_api("sendMessage", chat_id=chat, text=text, disable_notification=True)
+        new_id = r["result"]["message_id"]
+        _tg_api("pinChatMessage", chat_id=chat, message_id=new_id, disable_notification=True)
+        with db() as conn:
+            set_flag(conn, "tg_street_msg", str(new_id))
+            log_event(conn, "street_pin", msg_id=new_id, boxes=len(rows))
+    except Exception as e:
+        with db() as conn:
+            log_event(conn, "street_tg_fail", error=str(e)[:200])
+    finally:
+        _street_syncing.release()
+
+
 @app.post("/inbox")
 def add_inbox(item: InboxItem):
     text = item.text.strip()
     if not text:
         raise HTTPException(400, "empty text")
     with db() as conn:
+        similar = _find_similar_trashed(conn, text)
+        street = 1 if STREET_RE.search(text) else 0
         cur = conn.execute(
-            "INSERT INTO boxes(raw_text, source) VALUES(?, ?)",
-            (text, item.source))
+            "INSERT INTO boxes(raw_text, source, grp, street) VALUES(?, ?, ?, ?)",
+            (text, item.source, "meta" if _is_meta(text) else None, street))
         box_id = cur.lastrowid
+        if street:
+            set_flag(conn, "street_dirty", datetime.now().isoformat(timespec="seconds"))
         conn.execute(
             "INSERT INTO moves(box_id, from_shelf, to_shelf) VALUES(?, NULL, 'inbox')",
             (box_id,))
         log_event(conn, "inbox_add", id=box_id, source=item.source, text=text)
-    return {"id": box_id}
+    threading.Thread(target=_ai_classify_box, args=(box_id, text), daemon=True).start()
+    return {"id": box_id,
+            "similar_trashed": {"id": similar["id"], "text": similar["raw_text"]} if similar else None}
+
+
+class TriagePassUpdate(BaseModel):
+    id: int
+    p: int
+
+
+@app.post("/triage_pass")
+def triage_pass(t: TriagePassUpdate):
+    """Персист позиции товара в конвейере триажа - без этого reload посреди
+    разбора откатывает все промежуточные ответы ("Это дело?" и т.д.), потому
+    что route() двигает только in-memory состояние браузера, а на сервер
+    уходит лишь финальная отгрузка."""
+    with db() as conn:
+        conn.execute("UPDATE boxes SET triage_pass=? WHERE id=? AND shelf='inbox'",
+                     (max(0, min(4, t.p)), t.id))
+    return {"ok": True}
 
 
 @app.get("/boxes")
@@ -199,7 +590,32 @@ def list_boxes(shelf: str = "inbox", limit: int = 200):
         rows = conn.execute(
             "SELECT * FROM boxes WHERE shelf=? ORDER BY born_at DESC LIMIT ?",
             (shelf, limit)).fetchall()
-    return [dict(r) for r in rows]
+        out = []
+        for r in rows:
+            d = dict(r)
+            # петля: сколько раз коробку откатывали обратно в инбокс после решения -
+            # сигнал для эскалации вопроса в триаже (не даём молча гонять по кругу)
+            d["loop_count"] = conn.execute(
+                "SELECT COUNT(*) c FROM moves WHERE box_id=? AND to_shelf='inbox' AND from_shelf IS NOT NULL",
+                (r["id"],)).fetchone()["c"]
+            out.append(d)
+    return out
+
+
+@app.get("/inbox_dwell")
+def inbox_dwell():
+    """Сколько минут самый старый нетронутый инбокс-объект ждёт решения -
+    для dwell-triggered peek (напоминание по факту застоя, не по расписанию)."""
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT b.id, COALESCE("
+            "  (SELECT MAX(at) FROM moves WHERE box_id=b.id AND to_shelf='inbox'), b.born_at"
+            ") AS entered FROM boxes b WHERE b.shelf='inbox'").fetchall()
+    if not rows:
+        return {"oldest_minutes": 0, "count": 0}
+    now = datetime.now()
+    ages = [(now - datetime.fromisoformat(r["entered"])).total_seconds() / 60 for r in rows]
+    return {"oldest_minutes": round(max(ages)), "count": len(rows)}
 
 
 @app.post("/move")
@@ -207,7 +623,7 @@ def move_box(m: Move):
     if m.to not in SHELVES:
         raise HTTPException(400, f"unknown shelf: {m.to}")
     with db() as conn:
-        row = conn.execute("SELECT shelf, pallet_id FROM boxes WHERE id=?", (m.id,)).fetchone()
+        row = conn.execute("SELECT shelf, pallet_id, street FROM boxes WHERE id=?", (m.id,)).fetchone()
         if not row:
             raise HTTPException(404, "no such box")
         # Физический стопор: пока инбокс не разобран, двигаются только коробки
@@ -217,6 +633,10 @@ def move_box(m: Move):
         conn.execute(
             "UPDATE boxes SET shelf=?, context=COALESCE(?, context), grp=COALESCE(?, grp) WHERE id=?",
             (m.to, m.context, m.grp, m.id))
+        if m.to == "inbox":
+            # общий откат в инбокс = начать разбор заново, конвейерная позиция не при делах
+            # (специфический undo() в терминале сам восстановит нужный проход отдельным вызовом)
+            conn.execute("UPDATE boxes SET triage_pass=0 WHERE id=?", (m.id,))
         if m.to != "focus":
             # звезда живёт только в фокусе: ушла коробка — погасла звезда
             conn.execute("UPDATE boxes SET starred=0 WHERE id=?", (m.id,))
@@ -225,6 +645,13 @@ def move_box(m: Move):
             (m.id, row["shelf"], m.to))
         if m.context:
             conn.execute("INSERT OR IGNORE INTO racks(context) VALUES(?)", (m.context,))
+        if m.to == "rack":
+            # приезд на стеллаж → отложенный автопрогон контекстуализации
+            # (дебаунс в планировщике: ждём затишья, чтобы сгруппировать пачкой)
+            set_flag(conn, "recontext_dirty", datetime.now().isoformat(timespec="seconds"))
+        if row["street"]:
+            # уличная коробка сменила полку (сделана/выкинута/в фокус) → освежить TG-закреп
+            set_flag(conn, "street_dirty", datetime.now().isoformat(timespec="seconds"))
         if m.to == "waiting":
             if m.wait_mode == "every":
                 sched = {"seq": [max(1, m.wait_days or 3)], "i": 0, "mode": "every"}
@@ -709,6 +1136,45 @@ def state():
             "review_due": review_due, "stars": stars, "rest_until": rest_until or None}
 
 
+def _pick_now(st, glow_items):
+    """Порт pickNow() из hub.html: одна рекомендация вместо стены задач (constrained front door)."""
+    c = st["counts"] or {}
+    stars = st["stars"] or []
+    hour = datetime.now().hour
+    if st["blocked"]:
+        return {"act": "⛔ Разблокировать склад: разобрать входящие",
+                "why": "физика мира: пока входящие не разобраны, всё стоит", "url": "/terminal"}
+    if c.get("inbox"):
+        return {"act": f"📥 Разобрать входящие ({c['inbox']})",
+                "why": "один вопрос на экран, вопросы сами разложат всё по полкам", "url": "/terminal"}
+    if glow_items:
+        return {"act": f"✨ Проверить ожидание ({len(glow_items)})",
+                "why": "коробки загорелись: пора чекнуть, дождался ли", "url": "/terminal#glow"}
+    if st["review_due"]:
+        return {"act": "🧰 Недельная пересборка · +25 ⭐",
+                "why": "столп №2: без неё система разваливается за две недели", "url": "/review"}
+    if hour >= 20 and not stars and c.get("focus"):
+        return {"act": "⭐ Отметить звезду на завтра",
+                "why": "две минуты: выбери главное — утром думать не придётся", "url": "/focus_page"}
+    if stars:
+        return {"act": "★ Делать звезду: " + stars[0]["text"][:60],
+                "why": "решение принято ещё вчера — просто начни", "url": "/focus_page"}
+    if c.get("focus"):
+        return {"act": f"🎯 Работать фокус ({c['focus']})",
+                "why": "одна задача на экране — её и делай", "url": "/focus_page"}
+    return {"act": "☕ Всё разобрано — отдых тоже работа",
+            "why": "можно закинуть что-то во входящие или просто выдохнуть",
+            "url": "/focus_page", "calm": True}
+
+
+@app.get("/peek")
+def peek():
+    """Ambient peek: та же рекомендация, что в hub.html, без открытия окна (для tray/notify-send)."""
+    st = state()
+    now = _pick_now(st, glow())
+    return {"now": now, "points_total": st["points_total"]}
+
+
 @app.get("/review_data")
 def review_data():
     """Итоги недели + очереди для пересборки: стеллажи, паллеты, заморозка."""
@@ -894,6 +1360,20 @@ def scheduler():
         now = datetime.now()
         hm = now.strftime("%H:%M")
         today = date.today().isoformat()
+        # автоконтекстуализация: пачка коробок приехала на стеллаж и настало затишье
+        dirty = get_flag_standalone("recontext_dirty")
+        if dirty and not _recontext_running.locked():
+            try:
+                quiet = (now - datetime.fromisoformat(dirty)).total_seconds()
+            except ValueError:
+                quiet = RECONTEXT_DEBOUNCE_S
+            if quiet >= RECONTEXT_DEBOUNCE_S:
+                threading.Thread(target=_recontextualize_rack, daemon=True).start()
+        # TG-закреп «🚶 Улица»: редактирование дешёвое, дебаунс не нужен -
+        # обновляем на ближайшем тике после любого изменения уличного списка
+        if (TG_TOKEN_FILE.exists() and TG_CHAT_FILE.exists()
+                and get_flag_standalone("street_dirty") and not _street_syncing.locked()):
+            threading.Thread(target=_sync_street_tg, daemon=True).start()
         if hm == MORNING_AT and ("morning", today) not in fired:
             fired.add(("morning", today))
             with db() as conn:
@@ -920,6 +1400,29 @@ def scheduler():
                 due = _review_due(conn)
             if due:
                 notify("🧰 Недельная пересборка", f"Столп №2: пересобери склад. http://127.0.0.1:{PORT}/review")
+        # страховочная автоконтекстуализация: пользователь (или событие-триггер)
+        # за день так и не пересобрал стеллаж - вечером делаем сами, но только
+        # если есть зачем: бесконтекстные коробки, свежие приезды или прошлый фейл
+        if hm == TRUCK_AT and ("recontext", today) not in fired:
+            fired.add(("recontext", today))
+            with db() as conn:
+                n_rack = conn.execute(
+                    "SELECT COUNT(*) c FROM boxes WHERE shelf='rack'").fetchone()["c"]
+                null_ctx = conn.execute(
+                    "SELECT COUNT(*) c FROM boxes WHERE shelf='rack' "
+                    "AND context IS NULL").fetchone()["c"]
+                last_arrival = conn.execute(
+                    "SELECT MAX(at) m FROM moves WHERE to_shelf='rack'").fetchone()["m"]
+                try:
+                    st = json.loads(get_flag(conn, "recontext_state") or "{}")
+                except ValueError:
+                    st = {}
+            need = (null_ctx > 0 or not st.get("ok")
+                    or (last_arrival or "").replace(" ", "T") > st.get("at", ""))
+            if n_rack >= RECONTEXT_MIN_BOXES and need and not _recontext_running.locked():
+                with db() as conn:
+                    log_event(conn, "recontext_nightly", rack=n_rack, null_ctx=null_ctx)
+                threading.Thread(target=_recontextualize_rack, daemon=True).start()
         if hm == TRUCK_AT and ("truck", today) not in fired:
             fired.add(("truck", today))
             with db() as conn:
