@@ -76,6 +76,7 @@ function render(){
       <div style="display:flex;gap:10px">
         <button onclick="formPallet(${b.id})">Оформить</button>
         <button style="background:#2e2e38" onclick="skip()">Позже ›</button>
+        <button style="background:#4a2e2e" title="передумал — проекта не будет" onclick="trashUnformed(${b.id})">🗑 Не нужен</button>
       </div>
     </div>`;
     return;
@@ -129,6 +130,13 @@ function pg(d){const n=pallets.length+frozen.length;pi=(pi+d+n)%n;inCls=d>0?'inl
 function skip(){
   const c=$('#c');c.classList.add('flyl');
   setTimeout(()=>{unformed.push(unformed.shift());render()},280);
+}
+async function trashUnformed(id){
+  // несформированный проект = обычный товар на полке pallet_step: в мусор через /move
+  $('#c').classList.add('fly');
+  beep(180,.12);
+  await api('/move',{id,to:'trash'});
+  setTimeout(load,280);
 }
 async function formPallet(id){
   const title=$('#t').value.trim(), crit=$('#cr').value.trim(), step=$('#st').value.trim();
