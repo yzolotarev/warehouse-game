@@ -142,6 +142,16 @@ app = FastAPI(title="warehouse")
 app.mount("/assets", StaticFiles(directory=Path(__file__).parent / "assets"), name="assets")
 
 
+@app.middleware("http")
+async def no_stale_ui(request, call_next):
+    """Chrome --app охотно кэширует страницы - обновления UI не должны прятаться."""
+    resp = await call_next(request)
+    ct = resp.headers.get("content-type", "")
+    if "html" in ct or "css" in ct or "javascript" in ct:
+        resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
 @app.get("/style.css")
 def style_css():
     return FileResponse(Path(__file__).parent / "style.css", media_type="text/css")
