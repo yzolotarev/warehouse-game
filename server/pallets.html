@@ -123,13 +123,14 @@ function render(){
     <details class="drawer">
       <summary>Управление</summary>
       <div class="drawer-body">
+        <button class="b-ghost" onclick="bump(${p.id})" title="клавиша P">📌 На первое место</button>
         <button class="b-ghost" onclick="freeze(${p.id},true)">🧊 Заморозить проект</button>
         <button class="b-danger" onclick="delPallet(${p.id})">🗑 Не нужен</button>
       </div>
     </details>
   </div>`;
   $('#pager').style.display='flex';
-  $('#cnt').textContent=`паллета ${pi+1} / ${total}`;
+  $('#cnt').textContent=`паллета ${pi+1} / ${total} · P = наверх`;
 }
 function renderFrozen(p,total){
   $('#stage').innerHTML=`<div class="card ${inCls}" style="opacity:.75">
@@ -222,9 +223,19 @@ async function addStep(pid){
   await api('/pallet/step',{pallet_id:pid,text:v});
   load();
 }
+function curPallet(){
+  if(unformed.length)return null;
+  return pi<pallets.length?pallets[pi]:frozen[pi-pallets.length];
+}
+async function bump(id){
+  const p=id?{id}:curPallet(); if(!p)return;
+  await api('/pallet/bump',{id:p.id});
+  beep(560,.08); pi=0; load();
+}
 document.addEventListener('keydown',e=>{
   if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA')return;
   if(e.key==='ArrowLeft')pg(-1); if(e.key==='ArrowRight')pg(1);
+  if(['p','P','з','З'].includes(e.key))bump();
 });
 load();
 </script>

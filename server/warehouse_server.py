@@ -548,6 +548,23 @@ def pallets_list():
             "series_points": SERIES_POINTS}
 
 
+class PalletBump(BaseModel):
+    id: int
+
+
+@app.post("/pallet/bump")
+def pallet_bump(b: PalletBump):
+    """📌 На первое место: список сортируется по created_at DESC - освежаем дату."""
+    with db() as conn:
+        row = conn.execute("SELECT id FROM pallets WHERE id=?", (b.id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "no such pallet")
+        conn.execute("UPDATE pallets SET created_at=datetime('now','localtime') WHERE id=?",
+                     (b.id,))
+        log_event(conn, "pallet_bump", pid=b.id)
+    return {"ok": True}
+
+
 class PalletFreeze(BaseModel):
     id: int
     frozen: bool
