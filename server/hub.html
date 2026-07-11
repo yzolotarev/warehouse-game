@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>🏭 Склад</title>
+<style>
+  :root{--bg:#1e1e24;--card:#2a2a32;--line:#44444e;--txt:#e8e8ee;--dim:#8a8a94;--amber:#ffb84d}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);
+    font-family:system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;overflow:hidden}
+  h1{font-size:20px;margin:0 0 2px;color:var(--amber)}
+  #sub{color:var(--dim);font-size:13px;margin-bottom:26px}
+  #grid{display:grid;grid-template-columns:repeat(3,190px);gap:16px}
+  .door{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px 16px;
+    cursor:pointer;text-align:center;transition:transform .15s,border-color .15s;position:relative}
+  .door:hover{transform:translateY(-4px);border-color:var(--amber)}
+  .door .ico{font-size:34px}
+  .door .name{font-size:15px;margin-top:8px}
+  .door .norm{font-size:11px;color:var(--dim);margin-top:2px}
+  .door .n{position:absolute;top:10px;right:12px;font-size:14px;color:var(--amber)}
+  .door.dis{opacity:.45;cursor:default}
+  .door.dis:hover{transform:none;border-color:var(--line)}
+  .glowing{animation:pulse 1.6s infinite}
+  @keyframes pulse{50%{border-color:#ffd27f;box-shadow:0 0 14px #ffb84d44}}
+  #foot{margin-top:26px;color:var(--dim);font-size:13px}
+  #blocked{display:none;margin-top:14px;background:#4a2020;border:1px solid #a04040;color:#ffd0d0;
+    padding:8px 14px;border-radius:9px;font-size:13px}
+  #review{display:none;margin-top:14px;background:#3e3a2e;border:1px solid #6e6448;color:#ffd9a0;
+    padding:8px 14px;border-radius:9px;font-size:13px;cursor:pointer;animation:pulse 1.6s infinite}
+</style>
+</head>
+<body>
+  <h1>🏭 Склад</h1>
+  <div id="sub">жизнь идёт: <span id="pts">0</span> очков всего</div>
+  <div id="grid">
+    <div class="door" id="d-inbox" onclick="go('/terminal')">
+      <div class="n" id="n-inbox"></div><div class="ico">📦</div>
+      <div class="name">Приёмка</div><div class="norm">инбокс → разбор</div>
+    </div>
+    <div class="door" id="d-focus" onclick="go('/focus_page')">
+      <div class="n" id="n-focus"></div><div class="ico">🎯</div>
+      <div class="name">Фокус</div><div class="norm">делаю сейчас (≤5)</div>
+    </div>
+    <div class="door" id="d-pallet" onclick="go('/pallets_page')">
+      <div class="n" id="n-pallet"></div><div class="ico">🧱</div>
+      <div class="name">Паллетная зона</div><div class="norm">проекты</div>
+    </div>
+    <div class="door" id="d-wait" onclick="go('/terminal')">
+      <div class="n" id="n-wait"></div><div class="ico">⏳</div>
+      <div class="name">Ожидание</div><div class="norm">ждёшь других</div>
+    </div>
+    <div class="door" id="d-rack" onclick="go('/racks_page')">
+      <div class="n" id="n-rack"></div><div class="ico">🗄</div>
+      <div class="name">Стеллажи</div><div class="norm">отложка (позже)</div>
+    </div>
+    <div class="door" id="d-done" onclick="go('/done_page')">
+      <div class="n" id="n-done"></div><div class="ico">🚚</div>
+      <div class="name">Отгрузка</div><div class="norm">сделано сегодня</div>
+    </div>
+  </div>
+  <div id="blocked" onclick="go('/terminal')" style="cursor:pointer">⛔ Склад стоит: инбокс не разобран → разбери</div>
+  <div id="review" onclick="go('/review')">🧰 Пора пересобрать склад (Week Review) · +25 очков →</div>
+  <div id="foot">зов в <span id="call"></span> · фура в <span id="truck"></span></div>
+<script>
+"use strict";
+function go(u){location.href=u}
+async function load(){
+  const st=await (await fetch('/state')).json();
+  const c=st.counts||{};
+  const set=(id,v)=>document.getElementById(id).textContent=v||'';
+  set('n-inbox',c.inbox); set('n-focus',c.focus); set('n-pallet',c.pallet_step);
+  set('n-wait',c.waiting); set('n-rack',c.rack); set('n-done',c.done);
+  set('pts',st.points_total); set('call',st.call_at); set('truck',st.truck_at);
+  document.getElementById('blocked').style.display=st.blocked?'block':'none';
+  document.getElementById('review').style.display=st.review_due?'block':'none';
+  const g=await (await fetch('/glow')).json();
+  document.getElementById('d-wait').classList.toggle('glowing',g.length>0);
+  document.getElementById('d-inbox').classList.toggle('glowing',(c.inbox||0)>0);
+}
+load(); setInterval(load,15000);
+</script>
+</body>
+</html>

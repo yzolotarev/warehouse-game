@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>🧰 Недельная пересборка</title>
+<style>
+  :root{--bg:#1e1e24;--card:#2a2a32;--line:#44444e;--txt:#e8e8ee;--dim:#8a8a94;--amber:#ffb84d;--vio:#b48aff}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);
+    font-family:system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;overflow:hidden}
+  #wrap{width:min(660px,94vw);padding:22px 0;height:100%;box-sizing:border-box;display:flex;flex-direction:column}
+  h1{font-size:17px;color:var(--amber);margin:0}
+  #sub{color:var(--dim);font-size:13px;margin-bottom:18px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:26px;text-align:center}
+  .task{font-size:20px;line-height:1.4;margin:10px 0 18px}
+  .meta{font-size:12px;color:var(--dim)}
+  .q{font-size:16px;color:var(--amber);margin:14px 0 12px}
+  .stat{font-size:34px;color:var(--amber)}
+  .statrow{display:flex;justify-content:center;gap:34px;margin:18px 0}
+  .statlbl{font-size:12px;color:var(--dim)}
+  button{font-size:15px;padding:12px 16px;border-radius:9px;border:1px solid var(--line);
+    background:#2e2e38;color:var(--txt);cursor:pointer;margin:0 5px}
+  button:hover{filter:brightness(1.25)}
+  .b-go{background:#3e3a2e;border-color:#6e6448;font-size:17px;padding:14px 26px}
+  .b-focus{background:#2e4a5e;border-color:#4a7896}
+  .b-trash{background:#4a2e2e;border-color:#8e4848}
+  .b-ice{background:#2e3e4a;border-color:#487896}
+  input{font-size:15px;padding:10px;border-radius:8px;border:1px solid var(--line);
+    background:#1e1e24;color:var(--txt);width:100%;box-sizing:border-box;margin-bottom:10px}
+  .steps{text-align:left;font-size:14px;margin:8px 0 4px}
+  .steps .done{opacity:.5;text-decoration:line-through}
+  .fly{animation:fly .4s ease forwards}
+  @keyframes fly{to{transform:translateX(120%) rotate(5deg);opacity:0}}
+  .in{animation:inup .3s ease}
+  @keyframes inup{from{transform:translateY(16px);opacity:0}}
+  #banner{display:none;background:#4a2020;border:1px solid #a04040;color:#ffd0d0;
+    padding:10px 14px;border-radius:9px;margin-bottom:14px;font-size:14px;cursor:pointer}
+  a{color:var(--dim);font-size:13px;text-decoration:none;margin-top:auto;text-align:center}
+</style>
+</head>
+<body><div id="wrap">
+  <h1>🧰 Недельная пересборка <span style="color:var(--dim);font-weight:normal">= Week Review</span></h1>
+  <div id="sub">столп №2: раз в неделю пройтись по всему складу, чтобы он не сгнил</div>
+  <div id="banner" onclick="location.href='/terminal'">⛔ Склад стоит: сначала разбери инбокс →</div>
+  <div id="stage"></div>
+  <a href="/">← в прихожую склада</a>
+</div>
+<script>
+"use strict";
+const $=s=>document.querySelector(s);
+let D=null, racks=[], pallets=[], frozen=[];
+async function api(p,body){
+  const r=await fetch(p,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});
+  if(r.status===423){$('#banner').style.display='block';throw new Error('blocked')}
+  return r.json()
+}
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
+function beep(f,d){try{const a=beep.ac=beep.ac||new AudioContext(),o=a.createOscillator(),g=a.createGain();
+  o.type='triangle';o.frequency.value=f;g.gain.value=.05;o.connect(g);g.connect(a.destination);
+  o.start();g.gain.exponentialRampToValueAtTime(1e-4,a.currentTime+d);o.stop(a.currentTime+d)}catch(e){}}
+async function load(){
+  D=await api('/review_data');
+  racks=D.racks; pallets=D.pallets; frozen=D.frozen;
+  intro();
+}
+function intro(){
+  $('#stage').innerHTML=`<div class="card in">
+    <div class="meta">неделя на складе</div>
+    <div class="statrow">
+      <div><div class="stat">${D.week_points}</div><div class="statlbl">очков</div></div>
+      <div><div class="stat">${D.shipped}</div><div class="statlbl">отгружено</div></div>
+      <div><div class="stat">${D.born}</div><div class="statlbl">коробок прибыло</div></div>
+    </div>
+    <div class="meta">впереди: стеллажи (${racks.length}) → паллеты (${pallets.length}) → морозилка (${frozen.length})</div>
+    <div class="q">награда за пересборку: +${D.reward} очков</div>
+    <button class="b-go" onclick="rackStep()">→ начать</button>
+  </div>`;
+}
+/* этап 1: стеллажи по одному */
+function rackStep(){
+  if(!racks.length){palletStep();return}
+  const b=racks[0];
+  $('#stage').innerHTML=`<div class="card in" id="c">
+    <div class="meta">🗄 стеллажи · осталось ${racks.length} · ${esc(b.context||'без контекста')}</div>
+    <div class="task">${esc(b.raw_text)}</div>
+    <div class="q">Ещё актуально?</div>
+    <button onclick="rackAct(null)">✅ Лежит дальше</button>
+    <button class="b-focus" onclick="rackAct('focus')">🎯 В фокус</button>
+    <button class="b-trash" onclick="rackAct('trash')">🗑 Уже нет</button>
+  </div>`;
+}
+async function rackAct(to){
+  const b=racks.shift();
+  $('#c').classList.add('fly');beep(to==='trash'?180:520,.1);
+  if(to){try{await api('/move',{id:b.id,to})}catch(e){return}}
+  setTimeout(rackStep,260);
+}
+/* этап 2: живые паллеты по одной */
+function palletStep(){
+  if(!pallets.length){frozenStep();return}
+  const p=pallets[0];
+  const steps=p.steps.map(s=>`<div class="${['done','archived'].includes(s.shelf)?'done':''}">
+    ${['done','archived'].includes(s.shelf)?'✅':(s.shelf==='focus'?'🎯':'·')} ${esc(s.raw_text)}</div>`).join('')||'<span class="meta">шагов нет</span>';
+  const idle=p.idle_days>7?`<span style="color:#e6a08e"> · 🕸 без движения ${p.idle_days} дн.</span>`:'';
+  $('#stage').innerHTML=`<div class="card in" id="c">
+    <div class="meta">🧱 паллеты · осталось ${pallets.length}${idle}</div>
+    <div class="task" style="color:var(--vio)">${esc(p.title)}</div>
+    <div class="meta">готово, когда: ${esc(p.done_criteria||'—')}</div>
+    <div class="steps">${steps}</div>
+    <div class="q">Проект живёт? Дай следующий шаг — или заморозь.</div>
+    <input id="ns" placeholder="следующий одношаговый шаг (уедет в 🎯)">
+    <div>
+      <button class="b-focus" onclick="palletAdd(${p.id})">→ 🎯 шаг в фокус</button>
+      <button onclick="palletOk()">Шаг уже есть ›</button>
+      <button class="b-ice" onclick="palletFreeze(${p.id})">🧊 Заморозить</button>
+    </div>
+  </div>`;
+  $('#ns').focus();
+}
+async function palletAdd(pid){
+  const v=$('#ns').value.trim(); if(!v){$('#ns').focus();return}
+  try{await api('/pallet/step',{pallet_id:pid,text:v})}catch(e){return}
+  beep(560,.12); pallets.shift();
+  $('#c').classList.add('fly'); setTimeout(palletStep,260);
+}
+function palletOk(){
+  pallets.shift(); beep(420,.06);
+  $('#c').classList.add('fly'); setTimeout(palletStep,260);
+}
+async function palletFreeze(pid){
+  await api('/pallet/freeze',{id:pid,frozen:true});
+  beep(240,.15); pallets.shift();
+  $('#c').classList.add('fly'); setTimeout(palletStep,260);
+}
+/* этап 3: морозилка */
+function frozenStep(){
+  if(!frozen.length){finish();return}
+  const p=frozen[0];
+  $('#stage').innerHTML=`<div class="card in" id="c">
+    <div class="meta">🧊 морозилка · осталось ${frozen.length}</div>
+    <div class="task">${esc(p.title)}</div>
+    <div class="meta">готово, когда: ${esc(p.done_criteria||'—')}</div>
+    <div class="q">Размораживаем?</div>
+    <button class="b-ice" onclick="frozenAct(false)">🧊 Пусть спит</button>
+    <button onclick="frozenAct(true)">▶️ Разморозить</button>
+  </div>`;
+}
+async function frozenAct(wake){
+  const p=frozen.shift();
+  if(wake)await api('/pallet/freeze',{id:p.id,frozen:false});
+  beep(wake?600:300,.1);
+  $('#c').classList.add('fly'); setTimeout(frozenStep,260);
+}
+/* финал */
+async function finish(){
+  const r=await api('/review_finish',{});
+  beep(660,.15);setTimeout(()=>beep(880,.25),140);
+  $('#stage').innerHTML=`<div class="card in">
+    <div style="font-size:40px">✨</div>
+    <div class="task">Склад пересобран.</div>
+    <div class="q">${r.points?`+${r.points} очков`:'сегодня уже пересобран — очки не дублируются'}</div>
+    <div class="meta">следующая пересборка через неделю — склад позовёт сам</div>
+    <div class="meta" style="color:#ffd97a;cursor:pointer;margin-top:8px" onclick="location.href='/focus_page'">⭐ и отметь звезду на завтра → фокус</div>
+    <div style="margin-top:16px"><button class="b-go" onclick="location.href='/'">→ в прихожую</button></div>
+  </div>`;
+}
+load();
+</script>
+</body>
+</html>

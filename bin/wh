@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""wh - терминальный вид склада. wh | wh add "текст" | wh all"""
+import json
+import sys
+import urllib.request
+
+BASE = "http://127.0.0.1:8091"
+
+
+def api(path, payload=None):
+    req = urllib.request.Request(BASE + path)
+    if payload is not None:
+        req.data = json.dumps(payload).encode()
+        req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=5) as r:
+        return json.load(r)
+
+
+def main():
+    args = sys.argv[1:]
+    if args and args[0] == "add":
+        text = " ".join(args[1:]).strip()
+        if not text:
+            sys.exit("wh add: пустой текст")
+        r = api("/inbox", {"text": text, "source": "cli"})
+        print(f"📦 #{r['id']} → инбокс")
+    elif args and args[0] == "all":
+        h = api("/health")
+        for shelf, n in sorted(h["counts"].items()):
+            print(f"{shelf:12} {n}")
+    else:
+        boxes = api("/boxes?shelf=inbox")
+        if not boxes:
+            print("Инбокс пуст.")
+        for b in boxes:
+            src = {"pc": "💻", "phone": "📱", "cli": "⌨️"}.get(b["source"], "?")
+            print(f"#{b['id']:<4} {b['born_at'][5:16]} {src}  {b['raw_text']}")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except OSError:
+        sys.exit("Сервер склада не отвечает (порт 8091). systemctl --user status warehouse-server")

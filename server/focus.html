@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>🎯 Фокус</title>
+<style>
+  :root{--bg:#1e1e24;--card:#2a2a32;--line:#44444e;--txt:#e8e8ee;--dim:#8a8a94;--blue:#7fb8e6}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);
+    font-family:system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;overflow:hidden}
+  #wrap{width:min(640px,94vw);padding:22px 0;height:100%;box-sizing:border-box;display:flex;flex-direction:column}
+  h1{font-size:17px;color:var(--blue);margin:0}
+  #sub{color:var(--dim);font-size:13px;margin-bottom:18px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:26px;text-align:center}
+  .task{font-size:21px;line-height:1.4;margin:10px 0 20px}
+  .meta{font-size:12px;color:var(--dim)}
+  button{font-size:16px;padding:13px 22px;border-radius:9px;border:1px solid var(--line);
+    background:#2e4a3a;color:var(--txt);cursor:pointer;margin:0 6px}
+  button:hover{filter:brightness(1.25)}
+  button.nav{background:#2e2e38;padding:10px 18px}
+  #pager{display:flex;align-items:center;justify-content:center;gap:14px;margin-top:14px}
+  #cnt{color:var(--dim);font-size:13px}
+  .muted{color:var(--dim);text-align:center;padding:40px 0;font-size:15px}
+  .fly{animation:fly .45s ease forwards}
+  @keyframes fly{to{transform:translateY(-90px);opacity:0}}
+  .in{animation:inup .3s ease}
+  @keyframes inup{from{transform:translateY(16px);opacity:0}}
+  a{color:var(--dim);font-size:13px;text-decoration:none;margin-top:auto;text-align:center}
+</style>
+</head>
+<body><div id="wrap">
+  <h1>🎯 Фокус <span style="color:var(--dim);font-weight:normal">= делаю сейчас (≤5)</span></h1>
+  <div id="sub">одна задача на экране - её и делай</div>
+  <div id="stage"></div>
+  <div id="pager" style="display:none">
+    <button class="nav" onclick="pg(-1)">‹</button><span id="cnt"></span><button class="nav" onclick="pg(1)">›</button>
+  </div>
+  <a href="/">← в прихожую склада</a>
+</div>
+<script>
+"use strict";
+const $=s=>document.querySelector(s);
+let items=[], i=0;
+async function api(p,body){const r=await fetch(p,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});return r.json()}
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
+function beep(f,d){try{const a=beep.ac=beep.ac||new AudioContext(),o=a.createOscillator(),g=a.createGain();
+  o.type='triangle';o.frequency.value=f;g.gain.value=.05;o.connect(g);g.connect(a.destination);
+  o.start();g.gain.exponentialRampToValueAtTime(1e-4,a.currentTime+d);o.stop(a.currentTime+d)}catch(e){}}
+let staleDays=3;
+async function load(){
+  const d=await api('/focus');
+  items=d.items; staleDays=d.stale_days;
+  i=Math.min(i,Math.max(0,items.length-1)); render();
+}
+function render(){
+  if(!items.length){$('#stage').innerHTML='<div class="card muted">Фокус пуст. Наполни его на разборе инбокса. ✨</div>';
+    $('#pager').style.display='none';return}
+  const b=items[i];
+  const stale=b.idle_days>staleDays;
+  const pal=b.pallet_title?` · 🧱 ${esc(b.pallet_title)}`:'';
+  const dust=stale?` · <span style="color:#e6a08e">🕸 лежит ${b.idle_days} дн.</span>`:'';
+  // ПДВ: награда видна ДО действия; серия — бонус за шаги одной паллеты за день
+  const reward=b.reward+b.series+(b.series?` <span style="color:#b48aff">(серия 🧱 +${b.series})</span>`:'');
+  const sib=b.pallet_id&&items.some(o=>o.id!==b.id&&o.pallet_id===b.pallet_id);
+  const hint=(sib&&!b.series)?'<div class="meta" style="margin-top:10px">💡 в фокусе ещё шаг этой паллеты: второй за день пойдёт серией, с бонусом</div>':'';
+  const staleRow=stale?`<div style="margin-top:12px">
+      <button class="nav" onclick="shelve(${b.id})">🗄 На стеллаж (позже)</button>
+    </div>`:'';
+  const starBtn=b.starred
+    ?`<button class="nav" style="border-color:#8a6d3b;color:#ffd97a" title="снять звезду" onclick="setStar(${b.id},false)">⭐ на завтра</button>`
+    :`<button class="nav" title="звезда = главное на завтра (утром решений ноль)" onclick="setStar(${b.id},true)">☆ на завтра</button>`;
+  $('#stage').innerHTML=`<div class="card in" id="c" ${b.starred?'style="border-color:#8a6d3b;box-shadow:0 0 18px rgba(246,173,85,.15)"':''}>
+    <div class="meta">${b.starred?'⭐ ':''}#${b.id} · родилась ${b.born_at.slice(0,10)}${pal}${dust}</div>
+    <div class="task">${esc(b.raw_text)}</div>
+    <button onclick="done(${b.id})">✅ Сделал +${reward}</button>
+    ${starBtn}
+    <button class="nav" style="background:#3a2626;font-size:13px;padding:10px 12px" title="уже неактуально"
+      onclick="toTrash(${b.id})">🗑</button>
+    ${hint}${staleRow}
+  </div>`;
+  $('#pager').style.display=items.length>1?'flex':'none';
+  $('#cnt').textContent=(i+1)+' / '+items.length;
+}
+function pg(d){i=(i+d+items.length)%items.length;render()}
+async function mv(id,to){
+  const r=await fetch('/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,to})});
+  if(r.status===423){$('#stage').insertAdjacentHTML('afterbegin',
+    '<div class="card" style="border-color:#a04040;color:#ffd0d0;margin-bottom:12px;cursor:pointer" onclick="location.href=\'/terminal\'">⛔ Склад стоит: разбери инбокс →</div>');
+    throw new Error('blocked')}
+  return r.json()
+}
+async function done(id){
+  $('#c').classList.add('fly');beep(700,.15);setTimeout(()=>beep(900,.2),100);
+  try{await mv(id,'done')}catch(e){return}
+  setTimeout(load,350);
+}
+async function shelve(id){
+  $('#c').classList.add('fly');beep(340,.1);
+  try{await mv(id,'rack')}catch(e){return}
+  setTimeout(load,350);
+}
+async function setStar(id,on){
+  const r=await fetch('/star',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,on})});
+  if(r.status===409){beep(180,.12);
+    $('#stage').insertAdjacentHTML('afterbegin',
+      '<div class="card" style="border-color:#8a6d3b;color:#ffd97a;margin-bottom:12px">уже 2 ⭐ — сними одну, окрестность внимания не резиновая</div>');
+    setTimeout(load,1800);return}
+  beep(on?880:340,.12);
+  const cur=items[i]&&items[i].id;
+  await load();
+  i=Math.max(0,items.findIndex(o=>o.id===cur));render();
+}
+async function toTrash(id){
+  $('#c').classList.add('fly');beep(180,.12);
+  try{await mv(id,'trash')}catch(e){return}
+  setTimeout(load,350);
+}
+document.addEventListener('keydown',e=>{
+  if(e.key==='ArrowLeft')pg(-1); if(e.key==='ArrowRight')pg(1);
+});
+load();
+</script>
+</body>
+</html>

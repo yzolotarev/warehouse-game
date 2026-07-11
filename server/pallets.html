@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>🧱 Паллетная зона</title>
+<style>
+  :root{--bg:#1e1e24;--card:#2a2a32;--line:#44444e;--txt:#e8e8ee;--dim:#8a8a94;--vio:#b48aff}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);
+    font-family:system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;overflow:hidden}
+  #wrap{width:min(680px,94vw);padding:20px 0;display:flex;flex-direction:column;height:100%;box-sizing:border-box}
+  h1{font-size:17px;color:var(--vio);margin:0}
+  #sub{color:var(--dim);font-size:13px;margin-bottom:16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px}
+  .raw{font-size:18px;margin-bottom:12px}
+  input{width:100%;box-sizing:border-box;font-size:15px;padding:10px;border-radius:8px;
+    border:1px solid var(--line);background:#1e1e24;color:var(--txt);margin-bottom:10px}
+  label{font-size:12px;color:var(--dim)}
+  button{font-size:15px;padding:11px 16px;border-radius:8px;border:1px solid var(--line);
+    background:#3a2e4a;color:var(--txt);cursor:pointer}
+  button:hover{filter:brightness(1.25)}
+  .ptitle{font-size:17px;color:var(--vio)}
+  .crit{font-size:13px;color:var(--dim);margin:4px 0 10px}
+  .step{font-size:15px;padding:4px 0}
+  .step.done{opacity:.5;text-decoration:line-through}
+  .muted{color:var(--dim);font-size:14px;text-align:center;padding:30px 0}
+  #pager{display:flex;align-items:center;justify-content:center;gap:16px;margin-top:12px}
+  #pager button{padding:8px 18px;background:#2e2e38}
+  #cnt{color:var(--dim);font-size:13px}
+  .fly{animation:fly .4s ease forwards}
+  @keyframes fly{to{transform:translateX(120%) rotate(5deg);opacity:0}}
+  .flyl{animation:flyl .35s ease forwards}
+  @keyframes flyl{to{transform:translateX(-120%) rotate(-4deg);opacity:0}}
+  .in{animation:inup .3s ease}
+  @keyframes inup{from{transform:translateY(16px);opacity:0}}
+  .inl{animation:inl .3s ease}
+  @keyframes inl{from{transform:translateX(40px);opacity:0}}
+  .inr{animation:inr .3s ease}
+  @keyframes inr{from{transform:translateX(-40px);opacity:0}}
+</style>
+</head>
+<body><div id="wrap">
+  <h1>🧱 Паллетная зона <span style="color:var(--dim);font-weight:normal">= Проекты</span></h1>
+  <div id="sub">многошаговые задачи. Здесь мутная задача получает цель («готово, когда...») и следующий конкретный шаг. Шаг уходит в Фокус - список «делаю сейчас».</div>
+  <div id="stage"></div>
+  <div id="pager" style="display:none">
+    <button onclick="pg(-1)">‹</button><span id="cnt"></span><button onclick="pg(1)">›</button>
+  </div>
+</div>
+<script>
+"use strict";
+const $=s=>document.querySelector(s);
+let unformed=[], pallets=[], frozen=[], seriesPts=2, pi=0;
+async function api(p,body){
+  const r=await fetch(p,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});
+  if(r.status===423){alert('⛔ Склад стоит: сначала разбери инбокс (/terminal)');throw new Error('blocked')}
+  return r.json()
+}
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
+async function load(){
+  const d=await api('/pallets');
+  unformed=d.unformed; pallets=d.pallets; frozen=d.frozen||[]; seriesPts=d.series_points||2;
+  pi=Math.min(pi,Math.max(0,pallets.length+frozen.length-1));
+  render();
+}
+let inCls='in';
+function render(){
+  $('#pager').style.display='none';
+  if(unformed.length){
+    const b=unformed[0];
+    $('#stage').innerHTML=`<div class="card ${inCls}" id="c">
+      <div style="color:var(--dim);font-size:12px;margin-bottom:6px">мутных в очереди: ${unformed.length}</div>
+      <div class="raw">🌫 ${esc(b.raw_text)}</div>
+      <label>Название паллеты</label><input id="t" value="${esc(b.raw_text.slice(0,60))}">
+      <label>Готово, когда...</label><input id="cr" placeholder="конкретный образ результата">
+      <label>Первый одношаговый шаг (уедет в 🎯 Фокус)</label><input id="st" placeholder="настолько простой, что не о чем думать">
+      <div style="display:flex;gap:10px">
+        <button onclick="form(${b.id})">Оформить</button>
+        <button style="background:#2e2e38" onclick="skip()">Позже ›</button>
+      </div>
+    </div>`;
+    return;
+  }
+  const total=pallets.length+frozen.length;
+  if(!total){$('#stage').innerHTML='<div class="card muted">Паллет нет. Арбитраж пуст. ✨</div>';return}
+  if(pi>=pallets.length){renderFrozen(frozen[pi-pallets.length],total);return}
+  const p=pallets[pi];
+  const steps=p.steps.map(s=>`<div class="step ${['done','archived'].includes(s.shelf)?'done':''}">
+    ${['done','archived'].includes(s.shelf)?'✅':(s.shelf==='focus'?'🎯':'·')} ${esc(s.raw_text)}</div>`).join('')||'<div class="muted">шагов нет</div>';
+  const idle=p.idle_days>7?`<div class="crit" style="color:#e6a08e">🕸 без движения ${p.idle_days} дн. (месяц — и уедет в морозилку)</div>`:'';
+  const series=p.done_today?`<div class="crit" style="color:var(--vio)">🔥 серия: сегодня по этой паллете уже сделано ${p.done_today} — следующий шаг даст +${seriesPts} сверху</div>`:
+    `<div class="crit">💡 второй шаг этой паллеты за день пойдёт серией: +${seriesPts} к очкам</div>`;
+  $('#stage').innerHTML=`<div class="card ${inCls}">
+    <div class="ptitle">🧱 ${esc(p.title)}</div>
+    <div class="crit">Готово, когда: ${esc(p.done_criteria||'—')}</div>
+    ${idle}${steps}${series}
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <input id="ns" placeholder="следующий одношаговый шаг" style="margin:0">
+      <button onclick="addStep(${p.id})">→ 🎯</button>
+    </div>
+    <div style="margin-top:10px">
+      <button style="background:#2e3e4a;font-size:13px;padding:8px 12px" onclick="freeze(${p.id},true)">🧊 Заморозить проект</button>
+      <button style="background:#4a2e2e;font-size:13px;padding:8px 12px" onclick="delPallet(${p.id})">🗑 Не нужен</button>
+    </div>
+  </div>`;
+  $('#pager').style.display='flex';
+  $('#cnt').textContent=`паллета ${pi+1} / ${total}`;
+}
+function renderFrozen(p,total){
+  $('#stage').innerHTML=`<div class="card ${inCls}" style="opacity:.75">
+    <div class="ptitle">🧊 ${esc(p.title)} <span style="font-size:12px;color:var(--dim)">заморожена</span></div>
+    <div class="crit">Готово, когда: ${esc(p.done_criteria||'—')}</div>
+    <div class="muted" style="padding:10px 0">спит. Разморозка — только руками.</div>
+    <button onclick="freeze(${p.id},false)">▶️ Разморозить</button>
+    <button style="background:#4a2e2e" onclick="delPallet(${p.id})">🗑 Не нужен</button>
+  </div>`;
+  $('#pager').style.display='flex';
+  $('#cnt').textContent=`паллета ${pi+1} / ${total} · морозилка`;
+}
+async function freeze(id,fr){
+  await api('/pallet/freeze',{id,frozen:fr});
+  beep(fr?240:600,.12); load();
+}
+async function delPallet(id){
+  if(!confirm('Удалить проект? Несделанные шаги уедут в мусор.'))return;
+  const r=await api('/pallet/delete',{id});
+  beep(180,.15); pi=0; load();
+}
+function pg(d){const n=pallets.length+frozen.length;pi=(pi+d+n)%n;inCls=d>0?'inl':'inr';render();inCls='in'}
+function skip(){
+  const c=$('#c');c.classList.add('flyl');
+  setTimeout(()=>{unformed.push(unformed.shift());render()},280);
+}
+async function form(id){
+  const title=$('#t').value.trim(), crit=$('#cr').value.trim(), step=$('#st').value.trim();
+  if(!title)return;
+  $('#c').classList.add('fly');
+  beep(560,.12);
+  await api('/pallet',{title,done_criteria:crit,from_box:id,first_step:step});
+  setTimeout(load,280);
+}
+function beep(f,d){try{const a=beep.ac=beep.ac||new AudioContext(),o=a.createOscillator(),g=a.createGain();
+  o.type='triangle';o.frequency.value=f;g.gain.value=.05;o.connect(g);g.connect(a.destination);
+  o.start();g.gain.exponentialRampToValueAtTime(1e-4,a.currentTime+d);o.stop(a.currentTime+d)}catch(e){}}
+async function addStep(pid){
+  const v=$('#ns').value.trim(); if(!v)return;
+  await api('/pallet/step',{pallet_id:pid,text:v});
+  load();
+}
+document.addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT')return;
+  if(e.key==='ArrowLeft')pg(-1); if(e.key==='ArrowRight')pg(1);
+});
+load();
+</script>
+</body>
+</html>

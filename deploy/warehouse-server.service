@@ -1,0 +1,12 @@
+[Unit]
+Description=Warehouse task server (game backend)
+After=network.target
+
+[Service]
+# путь подставляет deploy/install.sh
+ExecStart=/usr/bin/python3 __REPO__/server/warehouse_server.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

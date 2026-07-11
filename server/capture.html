@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Quick Capture</title>
+    <style>
+        :root {
+            --bg-page: #1A1921;
+            --bg-card: #232028;
+            --border: #44444e;
+            --text: #e8e8ee;
+            --accent: #ffb84d;
+            --success: #8dff9e;
+            --error: #ff8d8d;
+        }
+
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100vw;
+            height: 100vh;
+            background: var(--bg-page);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            overflow: hidden;
+        }
+
+        /* Пылинки */
+        .dust {
+            position: absolute;
+            width: 2px;
+            height: 2px;
+            background: var(--accent);
+            border-radius: 50%;
+            opacity: 0.3;
+            pointer-events: none;
+            animation: float 8s infinite linear;
+        }
+
+        @keyframes float {
+            0% { transform: translate(0, 0); }
+            50% { transform: translate(50px, -30px); }
+            100% { transform: translate(0, 0); }
+        }
+
+        #card {
+            width: 100vw;
+            height: 100vh;
+            background: var(--bg-card);
+            border: 1px solid var(--accent);
+            border-radius: 0;
+            padding: 16px 20px;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            transition: all 150ms ease-out;
+            animation: appear 150ms ease-out forwards;
+        }
+
+        @keyframes appear {
+            from { opacity: 0; transform: scale(0.96); }
+            to { opacity: 1; transform: scale(1); }
+        }
+
+        #label {
+            font-size: 11px;
+            color: var(--accent);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 12px;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        #label span { color: #777; }
+
+        input {
+            background: transparent;
+            border: none;
+            outline: none;
+            color: var(--text);
+            font-size: 17px;
+            width: 100%;
+            caret-color: var(--accent);
+        }
+
+        input::placeholder { color: #555; }
+
+        .hint {
+            margin-top: auto;
+            text-align: right;
+            font-size: 10px;
+            color: #444;
+        }
+
+        .success { border-color: var(--success) !important; }
+        .error { border-color: var(--error) !important; }
+    </style>
+</head>
+<body>
+
+    <div class="dust" style="top: 20%; left: 20%;"></div>
+    <div class="dust" style="top: 60%; left: 80%;"></div>
+    <div class="dust" style="top: 80%; left: 10%;"></div>
+
+    <div id="card">
+        <div id="label">📦 Инбокс <span id="sub">что в голове?</span></div>
+        <input type="text" id="input" placeholder="напиши и нажми Enter…" autofocus autocomplete="off">
+        <div class="hint">Enter - отправить · Esc - закрыть</div>
+    </div>
+
+    <script>
+        const input = document.getElementById('input');
+        const card = document.getElementById('card');
+        const sub = document.getElementById('sub');
+
+        function playSound() {
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(660, ctx.currentTime);
+            gain.gain.setValueAtTime(0.1, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.3);
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start();
+            osc.stop(ctx.currentTime + 0.3);
+        }
+
+        async function submit() {
+            const val = input.value.trim();
+            if (!val) { window.close(); return; }
+
+            try {
+                const response = await fetch('http://127.0.0.1:8091/inbox', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: val, source: 'pc' })
+                });
+
+                if (response.ok) {
+                    card.classList.add('success');
+                    sub.innerText = '✅ принято';
+                    sub.style.color = 'var(--success)';
+                    playSound();
+                    setTimeout(() => window.close(), 400);
+                } else {
+                    throw new Error();
+                }
+            } catch (e) {
+                card.classList.add('error');
+                sub.innerText = '⚠ склад не отвечает - текст не сохранён';
+                sub.style.color = 'var(--error)';
+            }
+        }
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') submit();
+            if (e.key === 'Escape') window.close();
+        });
+    </script>
+</body>
+</html>
