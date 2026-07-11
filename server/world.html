@@ -17,6 +17,14 @@
     border-color:#8a6d3b;color:#ffd97a;max-width:38vw;overflow:hidden;text-overflow:ellipsis}
   #menu{top:14px;left:16px;pointer-events:auto;cursor:pointer}
   #menu:hover{border-color:var(--amber)}
+  #wtheme{bottom:12px;right:16px;pointer-events:auto;cursor:pointer;font-size:15px}
+  #wtheme:hover{border-color:var(--amber)}
+  body.day .plaque{background:rgba(250,246,240,.9);color:#3a352c;border-color:#b5ad9d}
+  body.day #pts b{color:#8a5a00}
+  body.day #star{color:#8a5a00;border-color:#c9a24d}
+  body.day #foot{color:#7a7468}
+  body.day #tip .nm{color:#8a5a00}
+  body.day #toast,body.day #review{color:#8a5a00}
   #rest-ask button{background:#2e2e38;color:var(--txt);border:1px solid var(--line);
     border-radius:7px;padding:7px 12px;font:inherit}
   #rest-ask button:hover{border-color:var(--amber)}
@@ -37,6 +45,7 @@
 <div class="plaque" id="pts">⭐ <b id="ptsN">0</b> · сегодня +<span id="ptsD">0</span></div>
 <div class="plaque" id="star" title="звезда дня — выбрана с вечера">★ <span id="starT"></span></div>
 <div class="plaque" id="menu" title="обычный режим: списки и кнопки">☰ меню</div>
+<div class="plaque" id="wtheme" title="тема: авто (по времени) → светлая → тёмная">◐</div>
 <div class="plaque" id="rest-ask" style="display:none;top:40%;left:50%;transform:translate(-50%,-50%);
   pointer-events:auto;text-align:center;padding:16px 22px;z-index:8">
   ☕ Перерыв — главное встать из-за стола<br>
@@ -65,6 +74,28 @@
 // меню-режим стартовый? (переключается в самом меню; /#world - явный вход в мир)
 if(localStorage.whStart==='menu'&&location.hash!=='#world'){location.replace('/hub');throw new Error('redirect')}
 /* ================= iso engine ================= */
+/* окружение: ночь/день. Объекты (коробки, стеллажи, работники) не темизируются. */
+const ENV={
+  night:{bg:'#1A1921',floorA:'#3A3945',floorB:'#2E2D38',floorStroke:'#262530',
+    asphalt:'#232230',wall:'#242331',wallLow:'#1f1e29',
+    windowRGB:'79,209,197',windowA0:.10,windowA1:.08,
+    magistral:'rgba(230,230,240,.045)',vignetteA:.42,
+    beamRGB:'255,158,125',beamScale:1,dust:'#ffe9d9',
+    label:'#a9a9b4',labelHover:'#ffe2b8',sub:'#6d6d78',subHover:'#cfcfda',labelShadow:'rgba(0,0,0,.55)'},
+  day:{bg:'#dcd7cd',floorA:'#cfc9bc',floorB:'#c4bdae',floorStroke:'#b5ad9d',
+    asphalt:'#b0a998',wall:'#e8e2d4',wallLow:'#ded7c6',
+    windowRGB:'150,200,255',windowA0:.55,windowA1:.15,
+    magistral:'rgba(90,80,60,.06)',vignetteA:.10,
+    beamRGB:'255,190,120',beamScale:.35,dust:'#fff6e6',
+    label:'#4a453c',labelHover:'#8a5a00',sub:'#7a7468',subHover:'#5a5348',labelShadow:'rgba(255,255,255,.5)'}
+};
+let env=ENV.night;
+function resolveTheme(){const t=localStorage.whTheme||'auto';
+  if(t!=='auto')return t;
+  const h=new Date().getHours();return h>=8&&h<20?'light':'dark'} // auto = по времени суток
+function applyEnv(){env=resolveTheme()==='light'?ENV.day:ENV.night;
+  document.body.style.background=env.bg;
+  document.body.classList.toggle('day',env===ENV.day);}
 const cv=document.getElementById('c'),ctx=cv.getContext('2d');
 let W,H,DPR=Math.min(devicePixelRatio||1,2);
 const TW=64,TH=32,GX=20,GY=14,CX=(GX-1)/2,CY=(GY-1)/2;
@@ -224,19 +255,19 @@ function drawWalls(){
   // сплошные задние стены (кроме левой x=0 - там ворота приёмки)
   for(const e of [[0,0,GX,0],[GX,0,GX,GY],[0,GY,GX,GY]]){
     if(midD(...e)>=ctrD)continue; // рисуем только задние
-    wallQuad(...e,64,'#242331');
+    wallQuad(...e,64,env.wall);
     for(let t=.08;t<.95;t+=.14){ // окошки под потолком
       const wx1=e[0]+(e[2]-e[0])*t,wy1=e[1]+(e[3]-e[1])*t;
       const wx2=e[0]+(e[2]-e[0])*(t+.07),wy2=e[1]+(e[3]-e[1])*(t+.07);
       const g=.5+.25*Math.sin(t*40);
-      ctx.fillStyle=`rgba(79,209,197,${.10+.08*g})`;
+      ctx.fillStyle=`rgba(${env.windowRGB},${env.windowA0+env.windowA1*g})`;
       ctx.beginPath();
       ctx.moveTo(px(ix(wx1,wy1)),px(iy(wx1,wy1)-54));ctx.lineTo(px(ix(wx2,wy2)),px(iy(wx2,wy2)-54));
       ctx.lineTo(px(ix(wx2,wy2)),px(iy(wx2,wy2)-42));ctx.lineTo(px(ix(wx1,wy1)),px(iy(wx1,wy1)-42));
       ctx.closePath();ctx.fill();}}
   // левая стена: низкий парапет с проёмом ворот (фура снаружи не перекрывается)
   if(midD(0,0,0,GY)<ctrD){
-    wallQuad(0,0,0,2.2,64,'#1f1e29');wallQuad(0,5.8,0,GY,14,'#1f1e29');
+    wallQuad(0,0,0,2.2,64,env.wallLow);wallQuad(0,5.8,0,GY,14,env.wallLow);
     // янтарная рама ворот
     ctx.strokeStyle='rgba(246,173,85,.55)';ctx.lineWidth=2;
     ctx.beginPath();
@@ -251,11 +282,11 @@ function zoneTiles(z,color,alpha){ctx.globalAlpha=alpha;
 function label(z){
   const cx=z.x+z.w/2,cy=z.y+z.h+.1,n=z.n();
   ctx.font='bold 11px "JetBrains Mono",monospace';ctx.textAlign='center';
-  ctx.fillStyle='rgba(0,0,0,.55)';
+  ctx.fillStyle=env.labelShadow;
   ctx.fillText(z.name+(n?' '+n:''),ix(cx,cy)+1,iy(cx,cy)+13);
-  ctx.fillStyle=hoverZone===z?'#ffe2b8':'#a9a9b4';
+  ctx.fillStyle=hoverZone===z?env.labelHover:env.label;
   ctx.fillText(z.name+(n?' '+n:''),ix(cx,cy),iy(cx,cy)+12);
-  ctx.font='9px "JetBrains Mono",monospace';ctx.fillStyle=hoverZone===z?'#cfcfda':'#6d6d78';
+  ctx.font='9px "JetBrains Mono",monospace';ctx.fillStyle=hoverZone===z?env.subHover:env.sub;
   ctx.fillText(z.sub,ix(cx,cy),iy(cx,cy)+24);}
 
 function buildObjects(){
@@ -420,7 +451,7 @@ function lights(){
   const pulse=.6+.4*Math.sin(tNow*2.6);
   ctx.save();ctx.globalCompositeOperation='overlay';
   let g=ctx.createLinearGradient(cx,cy-260,cx,cy);
-  g.addColorStop(0,`rgba(255,158,125,0)`);g.addColorStop(1,`rgba(255,158,125,${.28*pulse})`);
+  g.addColorStop(0,`rgba(${env.beamRGB},0)`);g.addColorStop(1,`rgba(${env.beamRGB},${.28*pulse*env.beamScale})`);
   ctx.fillStyle=g;
   ctx.beginPath();ctx.moveTo(cx-30,cy-260);ctx.lineTo(cx+30,cy-260);
   ctx.lineTo(cx+95,cy+10);ctx.lineTo(cx-95,cy+10);ctx.closePath();ctx.fill();
@@ -428,7 +459,7 @@ function lights(){
   // пылинки в луче
   ctx.save();ctx.globalCompositeOperation='screen';
   dust.forEach((p,i)=>{const yy=cy-240+p.y*250,xx=cx+(p.x-.5)*(40+((yy-(cy-240))/250)*130)+Math.sin(tNow*.7+i)*6;
-    ctx.globalAlpha=.4*p.s*pulse;ctx.fillStyle='#ffe9d9';ctx.fillRect(px(xx),px(yy),1,1);});
+    ctx.globalAlpha=.4*p.s*pulse*env.beamScale;ctx.fillStyle=env.dust;ctx.fillRect(px(xx),px(yy),1,1);});
   ctx.restore();ctx.globalAlpha=1;
   // тёплое сияние терминала
   const tx=ix(6.5,4),ty=iy(6.5,4)-24;
@@ -451,7 +482,7 @@ function frame(t){
   dust.forEach(p=>{p.y+=dt*.03*p.s;if(p.y>1)p.y=0});
 
   ctx.setTransform(DPR,0,0,DPR,0,0);
-  ctx.fillStyle='#1A1921';ctx.fillRect(0,0,W,H);
+  ctx.fillStyle=env.bg;ctx.fillRect(0,0,W,H);
   ctx.save();
   ctx.translate(W/2+cam.x,H/2+cam.y);ctx.scale(cam.z,cam.z);
   ctx.translate(-ix(GX/2,GY/2),-iy(GX/2,GY/2));
@@ -459,12 +490,12 @@ function frame(t){
 
   drawWalls();
   for(let y=0;y<GY;y++)for(let x=0;x<GX;x++)
-    tile(x,y,(x+y)%2?'#2E2D38':'#3A3945','#262530');
+    tile(x,y,(x+y)%2?env.floorB:env.floorA,env.floorStroke);
   // асфальт под грузовиками (за воротами)
-  for(let y=2;y<6;y++)for(let x=-3;x<0;x++)tile(x,y,'#232230',null);
-  for(let y=9;y<13;y++)for(let x=GX;x<GX+3;x++)tile(x,y,'#232230',null);
+  for(let y=2;y<6;y++)for(let x=-3;x<0;x++)tile(x,y,env.asphalt,null);
+  for(let y=9;y<13;y++)for(let x=GX;x<GX+3;x++)tile(x,y,env.asphalt,null);
   // магистраль row 6 — чуть светлее
-  for(let x=0;x<GX;x++)tile(x,6,'rgba(230,230,240,.045)',null);
+  for(let x=0;x<GX;x++)tile(x,6,env.magistral,null);
 
   const prim=primaryZone();
   for(const k in ZONES){const z=ZONES[k];
@@ -483,7 +514,7 @@ function frame(t){
     ctx.fillStyle=`rgba(200,40,40,${r})`;ctx.fillRect(0,0,W,H);}
   // виньетка
   const vg=ctx.createRadialGradient(W/2,H/2,H*.42,W/2,H/2,H*.85);
-  vg.addColorStop(0,'rgba(0,0,0,0)');vg.addColorStop(1,'rgba(0,0,0,.42)');
+  vg.addColorStop(0,'rgba(0,0,0,0)');vg.addColorStop(1,`rgba(0,0,0,${env.vignetteA})`);
   ctx.fillStyle=vg;ctx.fillRect(0,0,W,H);
   requestAnimationFrame(frame);}
 requestAnimationFrame(frame);
@@ -560,6 +591,12 @@ document.getElementById('blocked').onclick=()=>location.href='/terminal';
 document.getElementById('review').onclick=()=>location.href='/review';
 document.getElementById('star').onclick=()=>location.href='/focus_page';
 document.getElementById('menu').onclick=()=>location.href='/hub';
+const _wt=document.getElementById('wtheme'),_wticons={auto:'◐',light:'☀️',dark:'🌙'};
+_wt.textContent=_wticons[localStorage.whTheme||'auto'];
+_wt.onclick=()=>{const cur=localStorage.whTheme||'auto';
+  const next=cur==='auto'?'light':cur==='light'?'dark':'auto';
+  localStorage.whTheme=next;_wt.textContent=_wticons[next];applyEnv();};
+applyEnv();setInterval(applyEnv,60000);addEventListener('storage',applyEnv);
 </script>
 </body>
 </html>
