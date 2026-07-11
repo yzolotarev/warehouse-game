@@ -81,12 +81,12 @@
 function go(u){location.href=u}
 let NOW={url:'/terminal'};
 function toggleStart(){
-  localStorage.whStart=localStorage.whStart==='menu'?'world':'menu';
+  localStorage.whStart=localStorage.whStart==='world'?'menu':'world';
   renderStart();
 }
 function renderStart(){
   document.getElementById('startTgl').textContent=
-    localStorage.whStart==='menu'?'старт: меню ✓':'сделать меню стартовым';
+    localStorage.whStart==='world'?'сделать меню стартовым':'старт: меню ✓';
 }
 function pickNow(st,glow){
   const c=st.counts||{},h=new Date().getHours(),stars=st.stars||[];

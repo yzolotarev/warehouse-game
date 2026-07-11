@@ -112,3 +112,23 @@ details.drawer > .drawer-body {
 
 /* иллюстрации пустых состояний (Gemini, прозрачный фон) */
 .empty-ill { display: block; margin: 0 auto 10px; width: 96px; height: auto; opacity: .9; }
+
+/* "загрузка дня" (7:00-23:00) - шкала внизу, читается цветом и заполнением,
+   без цифр (число только в title по hover) */
+#dayload {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
+  height: 10px; background: var(--line);
+  border-top: 1px solid var(--card); box-shadow: inset 0 1px 2px rgba(0,0,0,.15);
+}
+#dayload > i {
+  display: block; height: 100%; width: 0;
+  /* 45s-переход убивал саму суть "загрузки": при открытии страницы (момент
+     действия) полоса должна ВИДИМО заполниться, а не ползти незаметно.
+     Короткий ease-out даёт настоящий loading-эффект и на входе, и на каждом
+     минутном тике (лёгкий видимый "пульс" вместо вечного бесшумного дрейфа). */
+  transition: width 1.1s cubic-bezier(.22,.68,0,1.01), background-color 1.1s ease-out;
+}
+#dayloadLbl {
+  position: fixed; left: 14px; bottom: 16px; z-index: 41;
+  font-size: 13px; color: var(--dim); white-space: nowrap; cursor: default;
+}

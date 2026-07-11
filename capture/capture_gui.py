@@ -13,7 +13,7 @@ def send(text):
         data=json.dumps({"text": text, "source": "pc"}).encode(),
         headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=3) as r:
-        return json.load(r)["id"]
+        return json.load(r)
 
 
 root = tk.Tk()
@@ -45,10 +45,17 @@ def on_enter(_=None):
         root.destroy()
         return
     try:
-        box_id = send(text)
-        label.config(text=f"✅ #{box_id} принято", fg="#8dff9e")
-        entry.delete(0, "end")
-        root.after(450, root.destroy)
+        data = send(text)
+        sim = data.get("similar_trashed")
+        if sim:
+            label.config(text=f"⚠ #{data['id']} принято, похоже на затрешенное: {sim['text'][:40]}",
+                        fg=AMBER)
+            entry.delete(0, "end")
+            root.after(1800, root.destroy)
+        else:
+            label.config(text=f"✅ #{data['id']} принято", fg="#8dff9e")
+            entry.delete(0, "end")
+            root.after(450, root.destroy)
     except OSError:
         label.config(text="⚠ склад не отвечает - текст НЕ сохранён", fg="#ff8d8d")
 

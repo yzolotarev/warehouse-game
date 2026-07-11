@@ -42,8 +42,15 @@
 </div>
 <script>
 "use strict";
+window.WH_LOADBAR_OWNED=true; // нижняя шкала здесь = прогресс шагов текущего проекта, не часы дня
 const $=s=>document.querySelector(s);
 let unformed=[], pallets=[], frozen=[], seriesPts=2, pi=0;
+function loadBar(nDone,nSteps,title){
+  if(!window.WH_setLoadBar)return;
+  if(nSteps===undefined){window.WH_setLoadBar(0,'нет открытого проекта');return}
+  const p=nSteps?Math.round(nDone/nSteps*100):0;
+  window.WH_setLoadBar(p,title+`: ${nDone}/${nSteps} шагов`);
+}
 async function api(p,body){
   const r=await fetch(p,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});
   if(r.status===423){alert('⛔ Склад стоит: сначала разбери инбокс (/terminal)');throw new Error('blocked')}
@@ -64,6 +71,7 @@ function render(){
   if(mode==='form'&&!unformed.length)mode='list';
   if(!total&&unformed.length)mode='form'; // проектов нет вообще - сразу оформление
   if(mode==='form'){
+    loadBar();
     const b=unformed[0];
     $('#stage').innerHTML=`<div class="card ${inCls}" id="c">
       <div style="color:var(--dim);font-size:12px;margin-bottom:6px">новых проектов на оформление: ${unformed.length}</div>
@@ -83,7 +91,7 @@ function render(){
   const banner=unformed.length
     ?`<div class="card" style="padding:12px 18px;margin-bottom:12px;cursor:pointer;border-color:var(--accent)"
         onclick="mode='form';render()">🌫 Новых проектов на оформление: <b>${unformed.length}</b> →</div>`:'';
-  if(!total){$('#stage').innerHTML='<div class="card muted"><img class="empty-ill" src="/assets/empty-pallets.png" alt="">Проектов нет. ✨ Проект рождается на разборе входящих: ответ «🧱 Проект» приводит его сюда.</div>';return}
+  if(!total){loadBar();$('#stage').innerHTML='<div class="card muted"><img class="empty-ill" src="/assets/empty-pallets.png" alt="">Проектов нет. ✨ Проект рождается на разборе входящих: ответ «🧱 Проект» приводит его сюда.</div>';return}
   if(pi>=pallets.length){renderFrozen(frozen[pi-pallets.length],total);return}
   const p=pallets[pi];
   const steps=p.steps.map(s=>`<div class="step ${['done','archived'].includes(s.shelf)?'done':''}">
@@ -92,6 +100,7 @@ function render(){
   const series=p.done_today?`<div class="crit" style="color:var(--vio)">🔥 серия: сегодня по этой паллете уже сделано ${p.done_today} — следующий шаг даст +${seriesPts} сверху</div>`:
     `<div class="crit">💡 второй шаг этой паллеты за день пойдёт серией: +${seriesPts} к очкам</div>`;
   const nSteps=p.steps.length, nDone=p.steps.filter(s=>['done','archived'].includes(s.shelf)).length;
+  loadBar(nDone,nSteps,p.title);
   const seriesHint=p.done_today
     ?`<div class="meta" style="color:var(--vio);margin-top:8px">🔥 серия: сегодня уже ${p.done_today} — следующий шаг +${seriesPts} сверху</div>`
     :`<div class="meta" style="margin-top:8px">💡 второй шаг за день пойдёт серией: +${seriesPts}</div>`;
@@ -140,6 +149,8 @@ function render(){
   $('#cnt').textContent=`паллета ${pi+1} / ${total} · P = наверх`;
 }
 function renderFrozen(p,total){
+  const nSteps=p.steps.length, nDone=p.steps.filter(s=>['done','archived'].includes(s.shelf)).length;
+  loadBar(nDone,nSteps,p.title+' (🧊)');
   $('#stage').innerHTML=`<div class="card ${inCls}" style="opacity:.75">
     <div class="ptitle">🧊 ${esc(p.title)} <span style="font-size:12px;color:var(--dim)">заморожена</span></div>
     <div class="crit">Готово, когда: ${esc(p.done_criteria||'—')}</div>

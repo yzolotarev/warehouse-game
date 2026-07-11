@@ -143,11 +143,19 @@
                 });
 
                 if (response.ok) {
+                    const data = await response.json();
                     card.classList.add('success');
-                    sub.innerText = '✅ принято';
-                    sub.style.color = 'var(--success)';
-                    playSound();
-                    setTimeout(() => window.close(), 400);
+                    if (data.similar_trashed) {
+                        sub.innerText = '⚠ похоже на затрешенное: ' + data.similar_trashed.text.slice(0, 40);
+                        sub.style.color = 'var(--accent)';
+                        playSound();
+                        setTimeout(() => window.close(), 1800);
+                    } else {
+                        sub.innerText = '✅ принято';
+                        sub.style.color = 'var(--success)';
+                        playSound();
+                        setTimeout(() => window.close(), 400);
+                    }
                 } else {
                     throw new Error();
                 }

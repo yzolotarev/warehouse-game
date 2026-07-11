@@ -1,0 +1,98 @@
+plugins:
+  datasette-dashboards:
+    warehouse-activity:
+      title: Активность склада
+      description: Поведенческая аналитика по events/moves/points — не граф, а частоты/тренды/heatmap
+      layout:
+        - [total-events, points-trend]
+        - [events-by-hour, events-by-kind]
+        - [day-hour-heatmap, shelf-distribution]
+
+      charts:
+        total-events:
+          title: Всего событий
+          db: warehouse
+          query: SELECT count(*) AS count FROM events
+          library: metric
+          display:
+            field: count
+
+        points-trend:
+          title: Очки по дням
+          db: warehouse
+          query: |
+            SELECT date(at) AS day, sum(amount) AS total
+            FROM points
+            GROUP BY day
+            ORDER BY day
+          library: line
+          display:
+            x: day
+            y: total
+
+        events-by-hour:
+          title: События по часам суток
+          db: warehouse
+          query: |
+            SELECT strftime('%H', at) AS hour, count(*) AS count
+            FROM events
+            GROUP BY hour
+            ORDER BY hour
+          library: bar
+          display:
+            x: hour
+            y: count
+
+        events-by-kind:
+          title: События по типу (топ-10)
+          db: warehouse
+          query: |
+            SELECT kind, count(*) AS count
+            FROM events
+            GROUP BY kind
+            ORDER BY count DESC
+            LIMIT 10
+          library: bar
+          display:
+            x: kind
+            y: count
+            horizontal: true
+
+        day-hour-heatmap:
+          title: Тепловая карта активности (день × час)
+          db: warehouse
+          query: |
+            SELECT date(at) AS day, strftime('%H', at) AS hour, count(*) AS count
+            FROM events
+            GROUP BY day, hour
+          library: vega-lite
+          display:
+            mark: rect
+            encoding:
+              x:
+                field: hour
+                type: ordinal
+                title: Час
+              y:
+                field: day
+                type: ordinal
+                title: День
+              color:
+                field: count
+                type: quantitative
+                title: События
+                scale:
+                  scheme: oranges
+
+        shelf-distribution:
+          title: Куда уходят коробки (to_shelf)
+          db: warehouse
+          query: |
+            SELECT to_shelf, count(*) AS count
+            FROM moves
+            GROUP BY to_shelf
+            ORDER BY count DESC
+          library: pie
+          display:
+            label: to_shelf
+            value: count
