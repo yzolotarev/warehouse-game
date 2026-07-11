@@ -408,13 +408,53 @@ def pallet_note(id: int):
     with db() as conn:
         row = conn.execute("SELECT note_path FROM pallets WHERE id=?", (id,)).fetchone()
     if not row or not row["note_path"]:
-        return {"path": None, "content": "", "files": []}
+        return {"path": None, "content": "", "files": [], "hash": None}
     p = Path(row["note_path"])
     files = [f.name for f in sorted(p.iterdir())
              if not f.name.startswith(".")] if p.is_dir() else []
     nf = _note_file(row["note_path"])
     content = nf.read_text(errors="replace") if nf.is_file() else ""
-    return {"path": row["note_path"], "content": content, "files": files}
+    import hashlib
+    return {"path": row["note_path"], "content": content, "files": files,
+            "hash": hashlib.sha256(content.encode()).hexdigest()}
+
+
+class NoteSave(BaseModel):
+    id: int
+    content: str
+    base_hash: str | None = None
+
+
+@app.post("/pallet/note_save")
+def pallet_note_save(n: NoteSave):
+    """Правка заметки прямо со склада. Предохранители:
+    бэкап перед записью + optimistic lock (409, если файл менялся в Obsidian)."""
+    import hashlib
+    import shutil
+    with db() as conn:
+        row = conn.execute("SELECT title, note_path FROM pallets WHERE id=?",
+                           (n.id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "no such pallet")
+        note_path = row["note_path"]
+        if not note_path:
+            safe = "".join(ch for ch in row["title"] if ch not in '/\\:*?"<>|')[:80].strip()
+            p = OBSIDIAN_PROJECTS / f"{safe or 'проект-' + str(n.id)}.md"
+            note_path = str(p)
+            conn.execute("UPDATE pallets SET note_path=? WHERE id=?", (note_path, n.id))
+        nf = _note_file(note_path)
+        cur = nf.read_text(errors="replace") if nf.is_file() else ""
+        if n.base_hash and hashlib.sha256(cur.encode()).hexdigest() != n.base_hash:
+            raise HTTPException(409, "файл изменился в Obsidian - открой заметку заново")
+        if nf.is_file() and cur.strip():
+            bdir = DB_PATH.parent / "note_backups"
+            bdir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(nf, bdir / f"{datetime.now():%Y%m%d-%H%M%S}-{nf.name}")
+        nf.parent.mkdir(parents=True, exist_ok=True)
+        nf.write_text(n.content)
+        log_event(conn, "note_save", pid=n.id, chars=len(n.content))
+    return {"ok": True, "path": note_path,
+            "hash": hashlib.sha256(n.content.encode()).hexdigest()}
 
 
 class NoteAppend(BaseModel):

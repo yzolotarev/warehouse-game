@@ -107,8 +107,13 @@ function render(){
     </div>
     <div id="notewrap" style="display:none">
       <div id="notefiles" style="font-size:11px;color:var(--dim);margin-top:8px"></div>
-      <pre id="notebody" style="text-align:left;font-size:12px;line-height:1.45;max-height:280px;overflow:auto;
-        background:#242430;border:1px solid var(--line);border-radius:8px;padding:12px;white-space:pre-wrap"></pre>
+      <textarea id="notebody" spellcheck="false" oninput="noteDirty()" style="text-align:left;font-size:12px;line-height:1.45;
+        width:100%;box-sizing:border-box;height:280px;resize:vertical;color:var(--txt);font-family:inherit;
+        background:#242430;border:1px solid var(--line);border-radius:8px;padding:12px;white-space:pre-wrap"></textarea>
+      <div style="display:flex;align-items:center;gap:10px;margin-top:6px">
+        <button id="notesave" style="display:none;background:#2e3a2e" onclick="noteSave(${p.id})">💾 Сохранить в Obsidian</button>
+        <span id="notestat" style="font-size:11px;color:var(--dim)">правь прямо здесь · перед записью делается бэкап</span>
+      </div>
     </div>
     <div id="attachwrap" style="display:none;margin-top:8px"></div>
     <div style="margin-top:10px">
@@ -145,14 +150,31 @@ function skip(){
   const c=$('#c');c.classList.add('flyl');
   setTimeout(()=>{unformed.push(unformed.shift());render()},280);
 }
+let noteHash=null;
 async function toggleNote(pid){
   const w=$('#notewrap');
   if(w.style.display==='none'){
     const d=await api('/pallet_note?id='+pid);
-    $('#notebody').textContent=d.content||'(заметка пуста)';
+    $('#notebody').value=d.content||'';
+    noteHash=d.hash;
     $('#notefiles').textContent=d.files.length?('📁 в папке проекта: '+d.files.join(' · ')):'';
+    $('#notesave').style.display='none';
+    $('#notestat').textContent='правь прямо здесь · перед записью делается бэкап';
     w.style.display='block';
   } else w.style.display='none';
+}
+function noteDirty(){$('#notesave').style.display='inline-block';
+  $('#notestat').textContent='есть несохранённые правки';}
+async function noteSave(pid){
+  const r=await fetch('/pallet/note_save',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({id:pid,content:$('#notebody').value,base_hash:noteHash})});
+  if(r.status===409){
+    $('#notestat').textContent='⚠ файл параллельно изменён в Obsidian — скопируй правки, закрой и открой заметку заново';
+    beep(180,.15);return}
+  const d=await r.json(); noteHash=d.hash;
+  $('#notesave').style.display='none';
+  $('#notestat').textContent='💾 сохранено '+new Date().toLocaleTimeString().slice(0,5);
+  beep(620,.1);
 }
 async function noteAppend(pid){
   const v=$('#na').value.trim(); if(!v)return;
@@ -160,7 +182,7 @@ async function noteAppend(pid){
   $('#na').value=''; beep(620,.1);
   if($('#notewrap').style.display!=='none'){ // заметка открыта - обновим
     const d=await api('/pallet_note?id='+pid);
-    $('#notebody').textContent=d.content||'';
+    $('#notebody').value=d.content||''; noteHash=d.hash;
   }
   load(); // note_path мог появиться - перерисуем кнопку
 }
@@ -203,7 +225,7 @@ async function addStep(pid){
   load();
 }
 document.addEventListener('keydown',e=>{
-  if(e.target.tagName==='INPUT')return;
+  if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA')return;
   if(e.key==='ArrowLeft')pg(-1); if(e.key==='ArrowRight')pg(1);
 });
 load();
