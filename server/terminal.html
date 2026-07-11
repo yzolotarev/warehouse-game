@@ -2,39 +2,31 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
+<link rel="stylesheet" href="/style.css">
+<script src="/theme.js"></script>
 <title>📦 Терминал склада</title>
 <style>
-  :root{--bg:#1e1e24;--card:#2a2a32;--line:#44444e;--txt:#e8e8ee;--dim:#8a8a94;--amber:#ffb84d}
-  html,body{margin:0;min-height:100%;background:var(--bg);color:var(--txt);
-    font-family:system-ui,sans-serif;display:flex;flex-direction:column;align-items:center}
-  #wrap{width:min(680px,94vw);padding:24px 0 60px}
-  h1{font-size:18px;color:var(--amber);margin:0 0 4px}
-  #sub{color:var(--dim);font-size:13px;margin-bottom:20px}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px;margin-bottom:14px}
-  #boxtext{font-size:22px;line-height:1.4;margin:6px 0 4px;word-break:break-word}
-  #boxmeta{color:var(--dim);font-size:12px}
-  #btns{display:flex;gap:12px;margin-top:18px}
-  #question{font-size:17px;margin-top:16px;color:var(--amber)}
-  button{font-size:16px;padding:14px 16px;border-radius:9px;border:1px solid var(--line);
-    background:#34343e;color:var(--txt);cursor:pointer;flex:1}
-  button:hover{filter:brightness(1.2)}
-  .b-focus{background:#2e4a5e;border-color:#4a7896}
-  .b-rack{background:#3e3a2e;border-color:#6e6448}
-  .b-pallet{background:#3a2e4a;border-color:#64488e}
-  .b-wait{background:#3c3c3c}
-  .b-trash{background:#4a2e2e;border-color:#8e4848}
-  .b-mind{background:#2e4a3a;border-color:#488e64}
+  html,body{margin:0;min-height:100%;display:flex;flex-direction:column;align-items:center}
+  #wrap{width:min(680px,94vw);padding:26px 0 60px;display:flex;flex-direction:column;min-height:90vh}
+  h1{margin:0 0 4px}
+  #sub{margin-bottom:22px}
+  .card{margin-bottom:16px}
+  #boxtext{font-size:20px;font-weight:500;line-height:1.45;margin:8px 0 4px;word-break:break-word}
+  #boxmeta{color:var(--dim);font-size:12.5px}
+  #btns{display:flex;gap:10px;margin-top:18px}
+  #btns button{flex:1}
+  #btns button[style]{flex:none} /* тихие ✔/🗑 не растягиваются */
+  #question{font-size:16px;font-weight:600;margin-top:16px;color:var(--accent)}
   #ctxrow{display:none;margin-top:12px;gap:8px}
-  #ctxrow input{flex:1;font-size:15px;padding:10px;border-radius:8px;border:1px solid var(--line);
-    background:#1e1e24;color:var(--txt)}
-  #mirror .row{display:flex;gap:10px;padding:4px 0;font-size:14px;border-bottom:1px dashed #33333c}
+  #ctxrow input{flex:1}
+  #mirror .row{display:flex;gap:10px;padding:4px 0;font-size:14px;border-bottom:1px dashed var(--line)}
   #mirror .t{color:var(--dim);min-width:44px}
-  #ptsbar{font-size:15px;color:var(--amber)}
+  #ptsbar{font-size:15px;color:var(--accent)}
   #donebar{margin-top:6px;color:var(--dim);font-size:13px}
-  #empty{font-size:20px;text-align:center;padding:40px 0}
+  #empty{font-size:19px;text-align:center;padding:40px 0}
   .fly{animation:fly .45s ease forwards}
   @keyframes fly{to{transform:translateX(120%) rotate(6deg);opacity:0}}
-  #blocked{display:none;background:#4a2020;border:1px solid #a04040;color:#ffd0d0;
+  #blocked{display:none;background:var(--danger-soft);border:1px solid var(--danger);color:var(--danger);
     padding:10px 14px;border-radius:9px;margin-bottom:14px;font-size:14px}
 </style>
 </head>
@@ -47,7 +39,7 @@
     <b>🪞 Зеркало дня</b> <span style="color:var(--dim);font-size:12px">= всё, что ты записал сегодня (рефлексия)</span> - <span id="ptsbar">0 очков</span>
     <div id="lenta"></div>
     <div id="donebar"></div>
-    <div style="display:flex;margin-top:16px"><button onclick="startTriage()" id="gobtn">→ разбирать</button></div>
+    <div style="display:flex;margin-top:16px"><button class="b-primary" onclick="startTriage()" id="gobtn">→ разбирать</button></div>
   </div>
 
   <div class="card" id="triage" style="display:none">
@@ -55,19 +47,19 @@
     <div id="boxtext"></div>
     <div id="question"></div>
     <div id="btns"></div>
-    <div id="hint" style="margin-top:10px;font-size:12px;color:#8a8a94"></div>
+    <div id="hint" style="margin-top:10px"></div>
     <div id="ctxrow">
       <input id="ctx" placeholder="контекст: @дом, @комп, @звонки...">
       <button onclick="moveCtx()">→</button>
     </div>
   </div>
-  <div class="card" id="empty" style="display:none">✨ Инбокс пуст. Склад дышит ровно.
-    <div style="margin-top:12px;font-size:14px;color:#ffd97a;cursor:pointer" onclick="location.href='/focus_page'">
+  <div class="card" id="empty" style="display:none;text-align:center"><img class="empty-ill" src="/assets/empty-inbox.png" alt="">✨ Инбокс пуст. Склад дышит ровно.
+    <div style="margin-top:12px;font-size:14px;color:var(--gold);cursor:pointer" onclick="location.href='/focus_page'">
       ⭐ Теперь отметь звезду на завтра → фокус</div></div>
   <div id="undorow" style="display:none;text-align:center;margin-top:2px">
-    <button style="flex:none;font-size:13px;padding:8px 14px;background:#2e2e38" onclick="undo()">↶ вернуть последнюю (Backspace)</button>
+    <button class="b-ghost" style="flex:none;font-size:13px;padding:8px 14px" onclick="undo()">↶ вернуть последнюю (Backspace)</button>
   </div>
-  <a href="/hub" style="color:#8a8a94;font-size:13px;text-decoration:none;margin-top:auto;text-align:center;padding:10px 0">← в меню склада</a>
+  <a href="/hub" style="font-size:13px;text-decoration:none;margin-top:auto;text-align:center;padding:10px 0">← в меню склада</a>
 </div>
 <script>
 "use strict";
@@ -204,7 +196,7 @@ function nextItem(){
   // тихие быстрые выходы с любого прохода: уже сделано / выкинуть (клавиши 3-4)
   [['✔ уже сделано','done'],['🗑','trash']].forEach(([label,shelf])=>{
     const b=document.createElement('button');
-    b.textContent=label;b.style.cssText='flex:none;font-size:12px;padding:8px 12px;background:#26262e;color:#8a8a94';
+    b.textContent=label;b.className='b-ghost';b.style.cssText='flex:none;font-size:12.5px;padding:8px 12px';
     b.title=shelf==='done'?'сделано вне системы - в отгрузку, +3':'не буду делать / не нужно - в мусор';
     b.onclick=()=>{P[pass].items.shift();
       logEv('triage_answer',{box:cur.id,text:cur.raw_text,pass:pass+1,q:P[pass].q,a:label});

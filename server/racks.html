@@ -2,24 +2,19 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
+<link rel="stylesheet" href="/style.css">
+<script src="/theme.js"></script>
 <title>🗄 Стеллажи</title>
 <style>
-  :root{--bg:#1e1e24;--card:#2a2a32;--line:#44444e;--txt:#e8e8ee;--dim:#8a8a94;--sand:#d8b46e}
-  html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);
-    font-family:system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;overflow:hidden}
-  #wrap{width:min(640px,94vw);padding:22px 0;height:100%;box-sizing:border-box;display:flex;flex-direction:column}
-  h1{font-size:17px;color:var(--sand);margin:0}
-  #sub{color:var(--dim);font-size:13px;margin-bottom:18px}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:26px;text-align:center}
-  .task{font-size:21px;line-height:1.4;margin:10px 0 20px}
-  .meta{font-size:12px;color:var(--dim)}
-  .ctx{display:inline-block;background:#3e3a2e;border:1px solid #6e6448;border-radius:20px;
-    padding:3px 12px;font-size:13px;color:var(--sand);margin-bottom:6px}
-  button{font-size:16px;padding:13px 18px;border-radius:9px;border:1px solid var(--line);
-    background:#2e2e38;color:var(--txt);cursor:pointer;margin:0 5px}
-  button:hover{filter:brightness(1.25)}
-  .b-focus{background:#2e4a5e;border-color:#4a7896}
-  .b-trash{background:#4a2e2e;border-color:#8e4848}
+  html,body{margin:0;height:100%;display:flex;flex-direction:column;align-items:center;overflow:hidden}
+  #wrap{width:min(640px,94vw);padding:24px 0;height:100%;box-sizing:border-box;display:flex;flex-direction:column}
+  h1{margin:0}
+  #sub{margin-bottom:18px}
+  .card{text-align:center}
+  .task{margin:12px 0 22px}
+  .ctx{display:inline-block;background:var(--accent-soft);border-radius:20px;
+    padding:4px 12px;font-size:13px;color:var(--accent);margin-bottom:6px}
+  button{margin:0 5px}
   .muted{color:var(--dim);text-align:center;padding:40px 0;font-size:15px}
   .fly{animation:fly .4s ease forwards}
   @keyframes fly{to{transform:translateX(120%) rotate(5deg);opacity:0}}
@@ -27,9 +22,9 @@
   @keyframes flyl{to{transform:translateX(-120%) rotate(-4deg);opacity:0}}
   .in{animation:inup .3s ease}
   @keyframes inup{from{transform:translateY(16px);opacity:0}}
-  #banner{display:none;background:#4a2020;border:1px solid #a04040;color:#ffd0d0;
+  #banner{display:none;background:var(--danger-soft);border:1px solid var(--danger);color:var(--danger);
     padding:10px 14px;border-radius:9px;margin-bottom:14px;font-size:14px;cursor:pointer}
-  a{color:var(--dim);font-size:13px;text-decoration:none;margin-top:auto;text-align:center}
+  a{font-size:13px;text-decoration:none;margin-top:auto;text-align:center}
 </style>
 </head>
 <body><div id="wrap">
@@ -65,9 +60,9 @@ function render(){
     <div class="ctx">${esc(b.context||'без контекста')}</div>
     <div class="meta">#${b.id} · лежит ${age} дн. · на стеллажах ещё ${items.length}</div>
     <div class="task">${esc(b.raw_text)}</div>
-    <button class="b-focus" onclick="act('focus')">🎯 В фокус</button>
+    <button class="b-primary" onclick="act('focus')">🎯 В фокус</button>
     <button onclick="skip()">Лежит дальше ›</button>
-    <button class="b-trash" onclick="act('trash')">🗑</button>
+    <button class="b-danger" onclick="act('trash')">🗑</button>
   </div>`;
 }
 function skip(){

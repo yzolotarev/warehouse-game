@@ -1,0 +1,113 @@
+/* Дизайн-система панелей: «заметки на тёплой бумаге» (Apple Notes vibe).
+   Спека: Gemini flash-thinking 11.07 (scratchpad/design-spec.md → DESIGN-GEMINI-PANELS).
+   Мир (world.html) сюда НЕ подключён - у склада свой ночной вайб. */
+
+:root, [data-theme="light"] {
+  --bg: #faf6f0;       /* тёплая бумага */
+  --card: #ffffff;     /* чистый лист */
+  --line: #e6dfd5;
+  --txt: #1c1c1e;
+  --dim: #7c776e;
+  --accent: #d48806;   /* тёплый янтарь */
+  --ok: #2f7c32;
+  --danger: #b3261e;
+  --gold: #b8860b;
+  --blue: #3568b8; --green: var(--ok); --vio: #6d4fa1; --sand: #8a6d3b; --amber: var(--accent);
+  --card-shadow: 0 1px 3px rgba(0,0,0,.05), 0 4px 12px rgba(140,130,115,.10);
+  --accent-soft: rgba(212,136,6,.10);
+  --danger-soft: rgba(179,38,30,.08);
+  --ok-fg: #ffffff;
+}
+[data-theme="dark"] {
+  --bg: #16161a;       /* графит, не стерильный чёрный */
+  --card: #222229;     /* тёмный лист */
+  --line: #33333d;
+  --txt: #f5f5f7;
+  --dim: #8e8e93;
+  --accent: #ffb020;
+  --ok: #34c759;
+  --danger: #ff6b61;
+  --gold: #ffd60a;
+  --blue: #7fb8e6; --green: var(--ok); --vio: #b8a3e6; --sand: #d9c9a0; --amber: var(--accent);
+  --card-shadow: 0 1px 3px rgba(0,0,0,.3), 0 4px 12px rgba(0,0,0,.5);
+  --accent-soft: rgba(255,176,32,.14);
+  --danger-soft: rgba(255,107,97,.12);
+  --ok-fg: #16161a;
+}
+
+html { background: var(--bg); }
+body {
+  background: var(--bg); color: var(--txt);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* типографика: текст - главный герой */
+h1 { font-size: 24px; font-weight: 700; line-height: 30px; letter-spacing: -.01em; color: var(--txt); }
+h1 .flavor, h1 span { font-weight: 400; }
+#sub { font-size: 14px; line-height: 20px; color: var(--dim); }
+.task { font-size: 19px; font-weight: 500; line-height: 27px; color: var(--txt); }
+.meta { font-size: 13px; line-height: 16px; color: var(--dim); }
+.hint, #hint { font-size: 12.5px; line-height: 17px; color: var(--dim); }
+
+/* лист бумаги */
+.card {
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+  padding: 24px; box-shadow: var(--card-shadow);
+}
+
+/* иерархия кнопок: primary одна на экран, остальные тише */
+button {
+  font: 600 15px/20px system-ui, -apple-system, sans-serif;
+  border-radius: 8px; border: none; padding: 10px 16px; cursor: pointer;
+  transition: filter .15s ease, background .15s ease;
+  background: var(--accent-soft); color: var(--accent);
+}
+button:hover { filter: brightness(1.08); }
+.b-primary { background: var(--accent); color: #fff; }
+[data-theme="dark"] .b-primary { color: #16161a; }
+.b-ok { background: var(--ok); color: var(--ok-fg); }
+.b-sec { background: var(--accent-soft); color: var(--accent); }
+.b-ghost { background: transparent; color: var(--dim); }
+.b-ghost:hover { color: var(--txt); filter: none; }
+.b-danger { background: var(--danger-soft); color: var(--danger); }
+
+input, textarea, select {
+  background: var(--card); color: var(--txt);
+  border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
+  font: 400 15px/20px system-ui, sans-serif;
+}
+input::placeholder, textarea::placeholder { color: var(--dim); opacity: .8; }
+input:focus, textarea:focus, select:focus { outline: 1.5px solid var(--accent); border-color: transparent; }
+
+a { color: var(--dim); }
+a:hover { color: var(--txt); }
+
+/* ящик прогрессивного раскрытия: тихий, текстовый */
+details.drawer > summary {
+  list-style: none; cursor: pointer; user-select: none;
+  color: var(--dim); font-size: 14px; font-weight: 500; padding: 6px 0;
+  display: flex; align-items: center;
+}
+details.drawer > summary::-webkit-details-marker { display: none; }
+details.drawer > summary::before {
+  content: '›'; display: inline-block; margin-right: 8px;
+  transition: transform .2s ease; color: var(--dim);
+}
+details.drawer[open] > summary::before { transform: rotate(90deg); }
+details.drawer[open] > summary { color: var(--txt); }
+details.drawer > .drawer-body {
+  border-left: 1px solid var(--line); margin-left: 6px; padding: 4px 0 8px 14px;
+  text-align: left;
+}
+
+/* переключатель темы (плавающий, ghost) */
+#themeTgl {
+  position: fixed; right: 14px; bottom: 12px; z-index: 50;
+  font-size: 15px; color: var(--dim); cursor: pointer; user-select: none;
+  padding: 6px 9px; border-radius: 8px; opacity: .75;
+}
+#themeTgl:hover { opacity: 1; background: var(--accent-soft); }
+
+/* иллюстрации пустых состояний (Gemini, прозрачный фон) */
+.empty-ill { display: block; margin: 0 auto 10px; width: 96px; height: auto; opacity: .9; }

@@ -16,6 +16,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import uvicorn
 
@@ -138,6 +139,17 @@ def init_db():
 
 
 app = FastAPI(title="warehouse")
+app.mount("/assets", StaticFiles(directory=Path(__file__).parent / "assets"), name="assets")
+
+
+@app.get("/style.css")
+def style_css():
+    return FileResponse(Path(__file__).parent / "style.css", media_type="text/css")
+
+
+@app.get("/theme.js")
+def theme_js():
+    return FileResponse(Path(__file__).parent / "theme.js", media_type="text/javascript")
 
 
 class InboxItem(BaseModel):

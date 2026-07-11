@@ -2,29 +2,23 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
+<link rel="stylesheet" href="/style.css">
+<script src="/theme.js"></script>
 <title>🧱 Паллетная зона</title>
 <style>
-  :root{--bg:#1e1e24;--card:#2a2a32;--line:#44444e;--txt:#e8e8ee;--dim:#8a8a94;--vio:#b48aff}
-  html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);
-    font-family:system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;overflow:hidden}
-  #wrap{width:min(680px,94vw);padding:20px 0;display:flex;flex-direction:column;height:100%;box-sizing:border-box}
-  h1{font-size:17px;color:var(--vio);margin:0}
-  #sub{color:var(--dim);font-size:13px;margin-bottom:16px}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px}
-  .raw{font-size:18px;margin-bottom:12px}
-  input{width:100%;box-sizing:border-box;font-size:15px;padding:10px;border-radius:8px;
-    border:1px solid var(--line);background:#1e1e24;color:var(--txt);margin-bottom:10px}
-  label{font-size:12px;color:var(--dim)}
-  button{font-size:15px;padding:11px 16px;border-radius:8px;border:1px solid var(--line);
-    background:#3a2e4a;color:var(--txt);cursor:pointer}
-  button:hover{filter:brightness(1.25)}
-  .ptitle{font-size:17px;color:var(--vio)}
-  .crit{font-size:13px;color:var(--dim);margin:4px 0 10px}
-  .step{font-size:15px;padding:4px 0}
+  html,body{margin:0;height:100%;display:flex;flex-direction:column;align-items:center;overflow:hidden}
+  #wrap{width:min(680px,94vw);padding:24px 0;display:flex;flex-direction:column;height:100%;box-sizing:border-box}
+  h1{margin:0}
+  #sub{margin-bottom:18px}
+  .raw{font-size:19px;font-weight:500;line-height:27px;margin-bottom:14px}
+  input{width:100%;box-sizing:border-box;margin-bottom:10px}
+  label{font-size:12.5px;color:var(--dim)}
+  .ptitle{font-size:20px;font-weight:600;line-height:27px}
+  .crit{font-size:13px;color:var(--dim);margin:6px 0 12px}
+  .step{font-size:15px;line-height:22px;padding:3px 0}
   .step.done{opacity:.5;text-decoration:line-through}
   .muted{color:var(--dim);font-size:14px;text-align:center;padding:30px 0}
-  #pager{display:flex;align-items:center;justify-content:center;gap:16px;margin-top:12px}
-  #pager button{padding:8px 18px;background:#2e2e38}
+  #pager{display:flex;align-items:center;justify-content:center;gap:16px;margin-top:14px}
   #cnt{color:var(--dim);font-size:13px}
   .fly{animation:fly .4s ease forwards}
   @keyframes fly{to{transform:translateX(120%) rotate(5deg);opacity:0}}
@@ -43,7 +37,7 @@
   <div id="sub">здесь проект получает цель («готово, когда...») и следующий конкретный шаг. Шаг уходит в Фокус - список «делаю сейчас».</div>
   <div id="stage"></div>
   <div id="pager" style="display:none">
-    <button onclick="pg(-1)">‹</button><span id="cnt"></span><button onclick="pg(1)">›</button>
+    <button class="b-ghost" onclick="pg(-1)">‹</button><span id="cnt"></span><button class="b-ghost" onclick="pg(1)">›</button>
   </div>
 </div>
 <script>
@@ -74,53 +68,65 @@ function render(){
       <label>Готово, когда...</label><input id="cr" placeholder="конкретный образ результата">
       <label>Первый шаг — маленький и конкретный (уедет в 🎯 Фокус)</label><input id="st" placeholder="настолько простой, что не о чем думать">
       <div style="display:flex;gap:10px">
-        <button onclick="formPallet(${b.id})">Оформить</button>
-        <button style="background:#2e2e38" onclick="skip()">Позже ›</button>
-        <button style="background:#4a2e2e" title="передумал — проекта не будет" onclick="trashUnformed(${b.id})">🗑 Не нужен</button>
+        <button class="b-primary" onclick="formPallet(${b.id})">Оформить</button>
+        <button class="b-ghost" onclick="skip()">Позже ›</button>
+        <button class="b-danger" title="передумал — проекта не будет" onclick="trashUnformed(${b.id})">🗑 Не нужен</button>
       </div>
     </div>`;
     return;
   }
   const total=pallets.length+frozen.length;
-  if(!total){$('#stage').innerHTML='<div class="card muted">Проектов нет. ✨ Проект рождается на разборе входящих: ответ «🧱 Проект» приводит его сюда.</div>';return}
+  if(!total){$('#stage').innerHTML='<div class="card muted"><img class="empty-ill" src="/assets/empty-pallets.png" alt="">Проектов нет. ✨ Проект рождается на разборе входящих: ответ «🧱 Проект» приводит его сюда.</div>';return}
   if(pi>=pallets.length){renderFrozen(frozen[pi-pallets.length],total);return}
   const p=pallets[pi];
   const steps=p.steps.map(s=>`<div class="step ${['done','archived'].includes(s.shelf)?'done':''}">
     ${['done','archived'].includes(s.shelf)?'✅':(s.shelf==='focus'?'🎯':'·')} ${esc(s.raw_text)}</div>`).join('')||'<div class="muted">шагов нет</div>';
-  const idle=p.idle_days>7?`<div class="crit" style="color:#e6a08e">🕸 без движения ${p.idle_days} дн. (месяц — и уедет в морозилку)</div>`:'';
+  const idle=p.idle_days>7?`<div class="crit" style="color:var(--sand)">🕸 без движения ${p.idle_days} дн. (месяц — и уедет в морозилку)</div>`:'';
   const series=p.done_today?`<div class="crit" style="color:var(--vio)">🔥 серия: сегодня по этой паллете уже сделано ${p.done_today} — следующий шаг даст +${seriesPts} сверху</div>`:
     `<div class="crit">💡 второй шаг этой паллеты за день пойдёт серией: +${seriesPts} к очкам</div>`;
-  const noteBtn=p.note_path
-    ?`<button style="background:#2e3a2e;font-size:13px;padding:8px 12px" onclick="toggleNote(${p.id})">📖 Заметка проекта</button>`
-    :`<button style="background:#2e2e38;font-size:13px;padding:8px 12px" onclick="showAttach(${p.id})">📎 Привязать заметку</button>`;
+  const nSteps=p.steps.length, nDone=p.steps.filter(s=>['done','archived'].includes(s.shelf)).length;
+  const seriesHint=p.done_today
+    ?`<div class="meta" style="color:var(--vio);margin-top:8px">🔥 серия: сегодня уже ${p.done_today} — следующий шаг +${seriesPts} сверху</div>`
+    :`<div class="meta" style="margin-top:8px">💡 второй шаг за день пойдёт серией: +${seriesPts}</div>`;
   $('#stage').innerHTML=`<div class="card ${inCls}">
-    <div class="ptitle">🧱 ${esc(p.title)}</div>
-    <div class="crit">Готово, когда: ${esc(p.done_criteria||'—')}</div>
-    ${idle}${steps}${series}
-    <div style="display:flex;gap:8px;margin-top:12px">
-      <input id="ns" placeholder="следующий одношаговый шаг" style="margin:0">
-      <button onclick="addStep(${p.id})">→ 🎯</button>
+    <div class="ptitle">${esc(p.title)}</div>
+    ${idle}
+    <div style="display:flex;gap:8px;margin-top:14px">
+      <input id="ns" placeholder="следующий шаг — маленький и конкретный" style="margin:0">
+      <button class="b-primary" style="white-space:nowrap" onclick="addStep(${p.id})">→ 🎯 В фокус</button>
     </div>
-    <div style="display:flex;gap:8px;margin-top:8px">
-      <input id="na" placeholder="дописать контекст в заметку проекта (уйдёт в Obsidian)" style="margin:0">
-      <button onclick="noteAppend(${p.id})" title="write-only: только дописывает в конец">＋📝</button>
-    </div>
-    <div id="notewrap" style="display:none">
-      <div id="notefiles" style="font-size:11px;color:var(--dim);margin-top:8px"></div>
-      <textarea id="notebody" spellcheck="false" oninput="noteDirty()" style="text-align:left;font-size:12px;line-height:1.45;
-        width:100%;box-sizing:border-box;height:280px;resize:vertical;color:var(--txt);font-family:inherit;
-        background:#242430;border:1px solid var(--line);border-radius:8px;padding:12px;white-space:pre-wrap"></textarea>
-      <div style="display:flex;align-items:center;gap:10px;margin-top:6px">
-        <button id="notesave" style="display:none;background:#2e3a2e" onclick="noteSave(${p.id})">💾 Сохранить в Obsidian</button>
-        <span id="notestat" style="font-size:11px;color:var(--dim)">правь прямо здесь · перед записью делается бэкап</span>
+    ${seriesHint}
+    <details class="drawer" style="margin-top:14px">
+      <summary>Цель и шаги (${nDone}/${nSteps})</summary>
+      <div class="drawer-body">
+        <div class="crit">Готово, когда: ${esc(p.done_criteria||'—')}</div>
+        ${steps}
       </div>
-    </div>
-    <div id="attachwrap" style="display:none;margin-top:8px"></div>
-    <div style="margin-top:10px">
-      ${noteBtn}
-      <button style="background:#2e3e4a;font-size:13px;padding:8px 12px" onclick="freeze(${p.id},true)">🧊 Заморозить проект</button>
-      <button style="background:#4a2e2e;font-size:13px;padding:8px 12px" onclick="delPallet(${p.id})">🗑 Не нужен</button>
-    </div>
+    </details>
+    <details class="drawer" ontoggle="if(this.open)noteLoad(${p.id})">
+      <summary>Заметка проекта${p.note_path?'':' · нет'}</summary>
+      <div class="drawer-body">
+        <div id="notefiles" class="meta" style="margin-bottom:6px"></div>
+        <textarea id="notebody" spellcheck="false" oninput="noteDirty()" style="width:100%;box-sizing:border-box;height:240px;
+          resize:vertical;font-size:13px;line-height:1.5;white-space:pre-wrap"></textarea>
+        <div style="display:flex;align-items:center;gap:10px;margin-top:6px">
+          <button id="notesave" class="b-sec" style="display:none" onclick="noteSave(${p.id})">💾 Сохранить в Obsidian</button>
+          <span id="notestat" class="meta">правь прямо здесь · перед записью делается бэкап</span>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <input id="na" placeholder="или быстро дописать строку в конец" style="margin:0">
+          <button class="b-ghost" onclick="noteAppend(${p.id})">＋</button>
+        </div>
+        <div id="attachwrap" style="margin-top:8px">${p.note_path?'':'<button class="b-ghost" onclick="showAttach('+p.id+')">📎 привязать существующий файл</button>'}</div>
+      </div>
+    </details>
+    <details class="drawer">
+      <summary>Управление</summary>
+      <div class="drawer-body">
+        <button class="b-ghost" onclick="freeze(${p.id},true)">🧊 Заморозить проект</button>
+        <button class="b-danger" onclick="delPallet(${p.id})">🗑 Не нужен</button>
+      </div>
+    </details>
   </div>`;
   $('#pager').style.display='flex';
   $('#cnt').textContent=`паллета ${pi+1} / ${total}`;
@@ -130,8 +136,8 @@ function renderFrozen(p,total){
     <div class="ptitle">🧊 ${esc(p.title)} <span style="font-size:12px;color:var(--dim)">заморожена</span></div>
     <div class="crit">Готово, когда: ${esc(p.done_criteria||'—')}</div>
     <div class="muted" style="padding:10px 0">спит. Разморозка — только руками.</div>
-    <button onclick="freeze(${p.id},false)">▶️ Разморозить</button>
-    <button style="background:#4a2e2e" onclick="delPallet(${p.id})">🗑 Не нужен</button>
+    <button class="b-sec" onclick="freeze(${p.id},false)">▶️ Разморозить</button>
+    <button class="b-danger" onclick="delPallet(${p.id})">🗑 Не нужен</button>
   </div>`;
   $('#pager').style.display='flex';
   $('#cnt').textContent=`паллета ${pi+1} / ${total} · морозилка`;
@@ -151,17 +157,13 @@ function skip(){
   setTimeout(()=>{unformed.push(unformed.shift());render()},280);
 }
 let noteHash=null;
-async function toggleNote(pid){
-  const w=$('#notewrap');
-  if(w.style.display==='none'){
-    const d=await api('/pallet_note?id='+pid);
-    $('#notebody').value=d.content||'';
-    noteHash=d.hash;
-    $('#notefiles').textContent=d.files.length?('📁 в папке проекта: '+d.files.join(' · ')):'';
-    $('#notesave').style.display='none';
-    $('#notestat').textContent='правь прямо здесь · перед записью делается бэкап';
-    w.style.display='block';
-  } else w.style.display='none';
+async function noteLoad(pid){
+  const d=await api('/pallet_note?id='+pid);
+  $('#notebody').value=d.content||'';
+  noteHash=d.hash;
+  $('#notefiles').textContent=d.files.length?('📁 в папке проекта: '+d.files.join(' · ')):'';
+  $('#notesave').style.display='none';
+  $('#notestat').textContent='правь прямо здесь · перед записью делается бэкап';
 }
 function noteDirty(){$('#notesave').style.display='inline-block';
   $('#notestat').textContent='есть несохранённые правки';}
@@ -180,22 +182,18 @@ async function noteAppend(pid){
   const v=$('#na').value.trim(); if(!v)return;
   await api('/pallet/note_append',{id:pid,text:v});
   $('#na').value=''; beep(620,.1);
-  if($('#notewrap').style.display!=='none'){ // заметка открыта - обновим
-    const d=await api('/pallet_note?id='+pid);
-    $('#notebody').value=d.content||''; noteHash=d.hash;
-  }
-  load(); // note_path мог появиться - перерисуем кнопку
+  const d=await api('/pallet_note?id='+pid);
+  if($('#notebody')){$('#notebody').value=d.content||''; noteHash=d.hash;}
 }
 async function showAttach(pid){
   const files=await api('/obsidian_files');
   const opts=files.map(f=>`<option value="${f.path.replace(/"/g,'&quot;')}">${f.name}</option>`).join('');
   $('#attachwrap').innerHTML=files.length
     ?`<div style="display:flex;gap:8px">
-        <select id="af" style="flex:1;background:#242430;color:var(--txt);border:1px solid var(--line);border-radius:7px;padding:8px">${opts}</select>
-        <button onclick="doAttach(${pid})">📎 Привязать</button>
-      </div><div style="font-size:11px;color:var(--dim);margin-top:4px">или просто допиши контекст выше — файл создастся сам</div>`
-    :'<div style="font-size:12px;color:var(--dim)">папка проектов Obsidian пуста или недоступна · допиши контекст выше — файл создастся сам</div>';
-  $('#attachwrap').style.display='block';
+        <select id="af" style="flex:1">${opts}</select>
+        <button class="b-sec" onclick="doAttach(${pid})">📎 Привязать</button>
+      </div>`
+    :'<div class="meta">папка проектов Obsidian пуста или недоступна · допиши строку выше — файл создастся сам</div>';
 }
 async function doAttach(pid){
   await api('/pallet/note_attach',{id:pid,path:$('#af').value});

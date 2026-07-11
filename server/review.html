@@ -2,39 +2,32 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
+<link rel="stylesheet" href="/style.css">
+<script src="/theme.js"></script>
 <title>🧰 Недельная пересборка</title>
 <style>
-  :root{--bg:#1e1e24;--card:#2a2a32;--line:#44444e;--txt:#e8e8ee;--dim:#8a8a94;--amber:#ffb84d;--vio:#b48aff}
-  html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);
-    font-family:system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;overflow:hidden}
-  #wrap{width:min(660px,94vw);padding:22px 0;height:100%;box-sizing:border-box;display:flex;flex-direction:column}
-  h1{font-size:17px;color:var(--amber);margin:0}
-  #sub{color:var(--dim);font-size:13px;margin-bottom:18px}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:26px;text-align:center}
-  .task{font-size:20px;line-height:1.4;margin:10px 0 18px}
-  .meta{font-size:12px;color:var(--dim)}
-  .q{font-size:16px;color:var(--amber);margin:14px 0 12px}
-  .stat{font-size:34px;color:var(--amber)}
+  html,body{margin:0;height:100%;display:flex;flex-direction:column;align-items:center;overflow:hidden}
+  #wrap{width:min(660px,94vw);padding:24px 0;height:100%;box-sizing:border-box;display:flex;flex-direction:column}
+  h1{margin:0}
+  #sub{margin-bottom:18px}
+  .card{text-align:center}
+  .task{font-size:19px;font-weight:500;line-height:27px;margin:10px 0 18px}
+  .q{font-size:16px;font-weight:600;color:var(--accent);margin:14px 0 12px}
+  .stat{font-size:34px;font-weight:700;color:var(--accent)}
   .statrow{display:flex;justify-content:center;gap:34px;margin:18px 0}
   .statlbl{font-size:12px;color:var(--dim)}
-  button{font-size:15px;padding:12px 16px;border-radius:9px;border:1px solid var(--line);
-    background:#2e2e38;color:var(--txt);cursor:pointer;margin:0 5px}
-  button:hover{filter:brightness(1.25)}
-  .b-go{background:#3e3a2e;border-color:#6e6448;font-size:17px;padding:14px 26px}
-  .b-focus{background:#2e4a5e;border-color:#4a7896}
-  .b-trash{background:#4a2e2e;border-color:#8e4848}
-  .b-ice{background:#2e3e4a;border-color:#487896}
-  input{font-size:15px;padding:10px;border-radius:8px;border:1px solid var(--line);
-    background:#1e1e24;color:var(--txt);width:100%;box-sizing:border-box;margin-bottom:10px}
+  button{margin:0 5px}
+  .b-go{font-size:16px;padding:14px 26px}
+  input{width:100%;box-sizing:border-box;margin-bottom:10px}
   .steps{text-align:left;font-size:14px;margin:8px 0 4px}
   .steps .done{opacity:.5;text-decoration:line-through}
   .fly{animation:fly .4s ease forwards}
   @keyframes fly{to{transform:translateX(120%) rotate(5deg);opacity:0}}
   .in{animation:inup .3s ease}
   @keyframes inup{from{transform:translateY(16px);opacity:0}}
-  #banner{display:none;background:#4a2020;border:1px solid #a04040;color:#ffd0d0;
+  #banner{display:none;background:var(--danger-soft);border:1px solid var(--danger);color:var(--danger);
     padding:10px 14px;border-radius:9px;margin-bottom:14px;font-size:14px;cursor:pointer}
-  a{color:var(--dim);font-size:13px;text-decoration:none;margin-top:auto;text-align:center}
+  a{font-size:13px;text-decoration:none;margin-top:auto;text-align:center}
 </style>
 </head>
 <body><div id="wrap">
@@ -72,7 +65,7 @@ function intro(){
     </div>
     <div class="meta">впереди: стеллажи (${racks.length}) → паллеты (${pallets.length}) → морозилка (${frozen.length})</div>
     <div class="q">награда за пересборку: +${D.reward} очков</div>
-    <button class="b-go" onclick="rackStep()">→ начать</button>
+    <button class="b-primary b-go" onclick="rackStep()">→ начать</button>
   </div>`;
 }
 /* этап 1: стеллажи по одному */
@@ -84,8 +77,8 @@ function rackStep(){
     <div class="task">${esc(b.raw_text)}</div>
     <div class="q">Ещё актуально?</div>
     <button onclick="rackAct(null)">✅ Лежит дальше</button>
-    <button class="b-focus" onclick="rackAct('focus')">🎯 В фокус</button>
-    <button class="b-trash" onclick="rackAct('trash')">🗑 Уже нет</button>
+    <button class="b-sec" onclick="rackAct('focus')">🎯 В фокус</button>
+    <button class="b-danger" onclick="rackAct('trash')">🗑 Уже нет</button>
   </div>`;
 }
 async function rackAct(to){
@@ -109,9 +102,9 @@ function palletStep(){
     <div class="q">Проект живёт? Дай следующий шаг — или заморозь.</div>
     <input id="ns" placeholder="следующий одношаговый шаг (уедет в 🎯)">
     <div>
-      <button class="b-focus" onclick="palletAdd(${p.id})">→ 🎯 шаг в фокус</button>
+      <button class="b-sec" onclick="palletAdd(${p.id})">→ 🎯 шаг в фокус</button>
       <button onclick="palletOk()">Шаг уже есть ›</button>
-      <button class="b-ice" onclick="palletFreeze(${p.id})">🧊 Заморозить</button>
+      <button class="b-ghost" onclick="palletFreeze(${p.id})">🧊 Заморозить</button>
     </div>
   </div>`;
   $('#ns').focus();
@@ -140,7 +133,7 @@ function frozenStep(){
     <div class="task">${esc(p.title)}</div>
     <div class="meta">готово, когда: ${esc(p.done_criteria||'—')}</div>
     <div class="q">Размораживаем?</div>
-    <button class="b-ice" onclick="frozenAct(false)">🧊 Пусть спит</button>
+    <button class="b-ghost" onclick="frozenAct(false)">🧊 Пусть спит</button>
     <button onclick="frozenAct(true)">▶️ Разморозить</button>
   </div>`;
 }
@@ -160,7 +153,7 @@ async function finish(){
     <div class="q">${r.points?`+${r.points} очков`:'сегодня уже пересобран — очки не дублируются'}</div>
     <div class="meta">следующая пересборка через неделю — склад позовёт сам</div>
     <div class="meta" style="color:#ffd97a;cursor:pointer;margin-top:8px" onclick="location.href='/focus_page'">⭐ и отметь звезду на завтра → фокус</div>
-    <div style="margin-top:16px"><button class="b-go" onclick="location.href='/'">→ в прихожую</button></div>
+    <div style="margin-top:16px"><button class="b-primary b-go" onclick="location.href='/'">→ в прихожую</button></div>
   </div>`;
 }
 load();

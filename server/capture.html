@@ -5,13 +5,12 @@
     <title>Quick Capture</title>
     <style>
         :root {
-            --bg-page: #1A1921;
-            --bg-card: #232028;
-            --border: #44444e;
-            --text: #e8e8ee;
-            --accent: #ffb84d;
-            --success: #8dff9e;
-            --error: #ff8d8d;
+            --bg-page: var(--bg);
+            --bg-card: var(--card);
+            --border: var(--line);
+            --text: var(--txt);
+            --success: var(--ok);
+            --error: var(--danger);
         }
 
         body, html {
@@ -74,25 +73,25 @@
             justify-content: space-between;
         }
 
-        #label span { color: #777; }
+        #label span { color: var(--dim); }
 
         input {
-            background: transparent;
-            border: none;
-            outline: none;
+            background: transparent !important;
+            border: none !important;
+            outline: none !important;
             color: var(--text);
             font-size: 17px;
             width: 100%;
             caret-color: var(--accent);
         }
 
-        input::placeholder { color: #555; }
+        input::placeholder { color: var(--dim); }
 
         .hint {
             margin-top: auto;
             text-align: right;
             font-size: 10px;
-            color: #444;
+            color: var(--dim);
         }
 
         .success { border-color: var(--success) !important; }
