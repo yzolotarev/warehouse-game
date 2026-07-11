@@ -74,6 +74,9 @@
 let queue=[], cur=null, focusN=0;
 const $=id=>document.getElementById(id);
 async function api(p,body){const r=await fetch(p,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});return r.json()}
+// журнал решений: каждый ответ триажа = строка датасета для будущей ИИ-предсортировки
+function logEv(kind,payload){try{navigator.sendBeacon('/event',
+  new Blob([JSON.stringify({kind,payload})],{type:'application/json'}))}catch(e){}}
 function beep(f,d){try{const a=beep.ac=beep.ac||new AudioContext(),o=a.createOscillator(),g=a.createGain();
   o.type='triangle';o.frequency.value=f;g.gain.value=.05;o.connect(g);g.connect(a.destination);
   o.start();g.gain.exponentialRampToValueAtTime(1e-4,a.currentTime+d);o.stop(a.currentTime+d)}catch(e){}}
@@ -150,6 +153,7 @@ function route(item,toPass){
 async function undo(){
   if(!hist.length)return;
   const h=hist.pop();
+  logEv('triage_undo',{box:h.item.id,text:h.item.raw_text});
   if(h.type==='ship'){
     try{await api('/move',{id:h.item.id,to:'inbox'})}catch(e){hist.push(h);return}
     loadMirror();
@@ -192,7 +196,9 @@ function nextItem(){
   P[pass].a.forEach(([label,fn])=>{
     const b=document.createElement('button');
     b.textContent=label;
-    b.onclick=()=>{P[pass].items.shift();beep(420,.05);fn(cur);flyNext()};
+    b.onclick=()=>{P[pass].items.shift();beep(420,.05);
+      logEv('triage_answer',{box:cur.id,text:cur.raw_text,pass:pass+1,q:P[pass].q,a:label});
+      fn(cur);flyNext()};
     $('btns').appendChild(b);
   });
   // тихие быстрые выходы с любого прохода: уже сделано / выкинуть (клавиши 3-4)
@@ -200,7 +206,9 @@ function nextItem(){
     const b=document.createElement('button');
     b.textContent=label;b.style.cssText='flex:none;font-size:12px;padding:8px 12px;background:#26262e;color:#8a8a94';
     b.title=shelf==='done'?'сделано вне системы - в отгрузку, +3':'не буду делать / не нужно - в мусор';
-    b.onclick=()=>{P[pass].items.shift();ship(cur,shelf);flyNext()};
+    b.onclick=()=>{P[pass].items.shift();
+      logEv('triage_answer',{box:cur.id,text:cur.raw_text,pass:pass+1,q:P[pass].q,a:label});
+      ship(cur,shelf);flyNext()};
     $('btns').appendChild(b);
   });
 }

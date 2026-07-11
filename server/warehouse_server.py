@@ -81,7 +81,19 @@ CREATE TABLE IF NOT EXISTS flags(
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS events(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  kind TEXT NOT NULL,
+  payload TEXT
+);
 """
+
+
+def log_event(conn, kind, **payload):
+    """Тотальный журнал: каждое действие системы и человека - строка датасета."""
+    conn.execute("INSERT INTO events(kind, payload) VALUES(?,?)",
+                 (kind, json.dumps(payload, ensure_ascii=False)))
 
 
 def award(conn, amount, reason):
@@ -149,6 +161,7 @@ def add_inbox(item: InboxItem):
         conn.execute(
             "INSERT INTO moves(box_id, from_shelf, to_shelf) VALUES(?, NULL, 'inbox')",
             (box_id,))
+        log_event(conn, "inbox_add", id=box_id, source=item.source, text=text)
     return {"id": box_id}
 
 
@@ -222,6 +235,8 @@ def move_box(m: Move):
                 if prev:
                     pts += SERIES_POINTS
                     award(conn, SERIES_POINTS, f"серия паллеты #{row['pallet_id']}")
+        log_event(conn, "move", id=m.id, frm=row["shelf"], to=m.to,
+                  context=m.context, points=pts)
     return {"ok": True, "points": pts}
 
 
@@ -261,6 +276,7 @@ def wait_check(w: WaitCheck):
             t["next"] = _add_days(t["seq"][t["i"]])
             conn.execute("UPDATE boxes SET glow_timer=? WHERE id=?",
                          (json.dumps(t), w.id))
+            log_event(conn, "wait_more", id=w.id, next=t["next"])
             return {"ok": True, "next": t["next"]}
     target = {"done": "done", "delete": "trash"}.get(w.action)
     if not target:
@@ -298,6 +314,8 @@ def pallet_new(p: PalletNew):
             step_id = c2.lastrowid
             conn.execute("INSERT INTO moves(box_id, from_shelf, to_shelf) "
                          "VALUES(?, NULL, 'focus')", (step_id,))
+        log_event(conn, "pallet_new", pid=pid, from_box=p.from_box,
+                  title=p.title.strip(), first_step=bool(p.first_step.strip()))
     return {"pallet_id": pid, "step_id": step_id}
 
 
@@ -315,6 +333,7 @@ def pallet_step(s: PalletStep):
             "VALUES(?, 'pallet', 'focus', ?)", (s.text.strip(), s.pallet_id))
         conn.execute("INSERT INTO moves(box_id, from_shelf, to_shelf) "
                      "VALUES(?, NULL, 'focus')", (cur.lastrowid,))
+        log_event(conn, "pallet_step", pid=s.pallet_id, step_id=cur.lastrowid)
     return {"step_id": cur.lastrowid}
 
 
@@ -356,6 +375,7 @@ class PalletFreeze(BaseModel):
 def pallet_freeze(f: PalletFreeze):
     with db() as conn:
         conn.execute("UPDATE pallets SET frozen=? WHERE id=?", (int(f.frozen), f.id))
+        log_event(conn, "pallet_freeze", pid=f.id, frozen=f.frozen)
     return {"ok": True}
 
 
@@ -379,6 +399,7 @@ def pallet_delete(d: PalletDelete):
             conn.execute("INSERT INTO moves(box_id, from_shelf, to_shelf) "
                          "VALUES(?, ?, 'trash')", (b["id"], b["shelf"]))
         conn.execute("DELETE FROM pallets WHERE id=?", (d.id,))
+        log_event(conn, "pallet_delete", pid=d.id, trashed_steps=len(live))
     return {"ok": True, "trashed_steps": len(live)}
 
 
@@ -404,6 +425,7 @@ def star(s: Star):
             if n >= 2:
                 raise HTTPException(409, "уже 2 ⭐ - больше окрестность внимания не вместит")
         conn.execute("UPDATE boxes SET starred=? WHERE id=?", (int(s.on), s.id))
+        log_event(conn, "star", id=s.id, on=s.on)
     return {"ok": True, "starred": s.on}
 
 
@@ -516,6 +538,7 @@ def review_finish():
             return {"ok": True, "points": 0}  # уже пересобран сегодня
         award(conn, REVIEW_POINTS, "недельная пересборка")
         set_flag(conn, "last_week_review", today)
+        log_event(conn, "review_finish", points=REVIEW_POINTS)
     return {"ok": True, "points": REVIEW_POINTS}
 
 
@@ -570,6 +593,7 @@ def rest_start(r: RestStart):
     until = datetime.now() + timedelta(minutes=mins)
     with db() as conn:
         set_flag(conn, "rest_until", until.isoformat(timespec="seconds"))
+        log_event(conn, "rest_start", minutes=mins)
     return {"ok": True, "until": until.isoformat(timespec="seconds")}
 
 
@@ -587,6 +611,7 @@ def rest_finish():
             return {"ok": True, "points": 0}
         award(conn, REST_POINTS, "отдых в кофейне")
         set_flag(conn, "last_rest_award", now.isoformat(timespec="seconds"))
+        log_event(conn, "rest_finish", points=REST_POINTS)
     return {"ok": True, "points": REST_POINTS}
 
 
@@ -603,6 +628,34 @@ def review_page():
 @app.get("/gemini_scene")
 def gemini_scene_page():
     return FileResponse(Path(__file__).parent.parent / "proto/gemini-scene.html")
+
+
+class ClientEvent(BaseModel):
+    kind: str
+    payload: dict = {}
+
+
+@app.post("/event")
+def client_event(e: ClientEvent):
+    """События из UI (ответы триажа и т.п.) - в тот же журнал, kind с префиксом ui_."""
+    kind = e.kind.strip()
+    if not kind:
+        raise HTTPException(400, "empty kind")
+    with db() as conn:
+        log_event(conn, f"ui_{kind}", **e.payload)
+    return {"ok": True}
+
+
+@app.get("/events")
+def events_list(limit: int = 200, kind: str | None = None):
+    with db() as conn:
+        if kind:
+            rows = conn.execute("SELECT * FROM events WHERE kind=? ORDER BY id DESC LIMIT ?",
+                                (kind, limit)).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM events ORDER BY id DESC LIMIT ?",
+                                (limit,)).fetchall()
+    return [dict(r) for r in rows]
 
 
 @app.get("/health")
@@ -639,6 +692,8 @@ def scheduler():
                     "SELECT raw_text FROM boxes WHERE shelf='focus' AND starred=1")]
             if stars:  # утром решений ноль: звезда выбрана с вечера
                 notify("⭐ Твоя звезда на сегодня", " · ".join(stars))
+                with db() as conn:
+                    log_event(conn, "sched_morning", stars=len(stars))
         if hm == CALL_AT and ("call", today) not in fired:
             fired.add(("call", today))
             with db() as conn:
@@ -667,6 +722,8 @@ def scheduler():
                 n_inbox = conn.execute("SELECT COUNT(*) c FROM boxes WHERE shelf='inbox'").fetchone()["c"]
                 if n_inbox and get_flag(conn, "last_ritual") != today:
                     set_flag(conn, "blocked", today)
+                log_event(conn, "sched_truck", archived=len(rows), inbox_left=n_inbox,
+                          stopper=bool(n_inbox and get_flag(conn, "last_ritual") != today))
             frozen_now = []
             with db() as conn:
                 for p in conn.execute("SELECT * FROM pallets WHERE frozen=0").fetchall():
@@ -674,6 +731,7 @@ def scheduler():
                             - date.fromisoformat(_pallet_last_move(conn, p))).days
                     if idle >= STALE_PALLET_DAYS:
                         conn.execute("UPDATE pallets SET frozen=1 WHERE id=?", (p["id"],))
+                        log_event(conn, "sched_autofreeze", pid=p["id"], idle=idle)
                         frozen_now.append(p["title"])
             if rows:
                 notify("🚚 Фура уехала", f"Увезла {len(rows)} посылок.")
