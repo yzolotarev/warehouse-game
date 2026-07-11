@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>💭 Мысли</title>
+<style>
+  :root{--bg:#1e1e24;--card:#2a2a32;--line:#44444e;--txt:#e8e8ee;--dim:#8a8a94;--vio:#b8a3e6}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);
+    font-family:system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;overflow:hidden}
+  #wrap{width:min(640px,94vw);padding:22px 0;height:100%;box-sizing:border-box;display:flex;flex-direction:column}
+  h1{font-size:17px;color:var(--vio);margin:0}
+  #sub{color:var(--dim);font-size:13px;margin-bottom:18px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:26px;text-align:center}
+  .task{font-size:20px;line-height:1.45;margin:10px 0 20px}
+  .meta{font-size:12px;color:var(--dim)}
+  button{font-size:15px;padding:12px 18px;border-radius:9px;border:1px solid var(--line);
+    background:#2e2e38;color:var(--txt);cursor:pointer;margin:0 5px}
+  button:hover{filter:brightness(1.25)}
+  #pager{display:flex;align-items:center;justify-content:center;gap:14px;margin-top:14px}
+  #cnt{color:var(--dim);font-size:13px}
+  .muted{color:var(--dim);text-align:center;padding:40px 0;font-size:15px}
+  .fly{animation:fly .45s ease forwards}
+  @keyframes fly{to{transform:translateY(-90px);opacity:0}}
+  .in{animation:inup .3s ease}
+  @keyframes inup{from{transform:translateY(16px);opacity:0}}
+  a{color:var(--dim);font-size:13px;text-decoration:none;margin-top:auto;text-align:center}
+</style>
+</head>
+<body><div id="wrap">
+  <h1>💭 Мысли <span style="color:var(--dim);font-weight:normal">= ждут переноса в заметки</span></h1>
+  <div id="sub">прочитай — и либо перенеси в Obsidian руками, либо выкини. Автоматический перенос (вики-гейт) будет позже.</div>
+  <div id="stage"></div>
+  <div id="pager" style="display:none">
+    <button onclick="pg(-1)">‹</button><span id="cnt"></span><button onclick="pg(1)">›</button>
+  </div>
+  <a href="/hub">← в меню склада</a>
+</div>
+<script>
+"use strict";
+const $=s=>document.querySelector(s);
+let items=[], i=0;
+async function api(p){const r=await fetch(p);return r.json()}
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
+function beep(f,d){try{const a=beep.ac=beep.ac||new AudioContext(),o=a.createOscillator(),g=a.createGain();
+  o.type='triangle';o.frequency.value=f;g.gain.value=.05;o.connect(g);g.connect(a.destination);
+  o.start();g.gain.exponentialRampToValueAtTime(1e-4,a.currentTime+d);o.stop(a.currentTime+d)}catch(e){}}
+async function load(){
+  items=await api('/boxes?shelf=mind');
+  i=Math.min(i,Math.max(0,items.length-1)); render();
+}
+function render(){
+  if(!items.length){$('#stage').innerHTML='<div class="card muted">Полка мыслей пуста. ✨ Мысль попадает сюда с разбора входящих: «Не дело → 💭 Мысль».</div>';
+    $('#pager').style.display='none';return}
+  const b=items[i];
+  $('#stage').innerHTML=`<div class="card in" id="c">
+    <div class="meta">#${b.id} · записана ${b.born_at.slice(0,10)}</div>
+    <div class="task">${esc(b.raw_text)}</div>
+    <button onclick="taken(${b.id})">✅ Перенёс в заметки</button>
+    <button style="background:#3a2626" onclick="toTrash(${b.id})">🗑 Уже не нужна</button>
+    <div class="meta" style="margin-top:12px">«перенёс» = ты сам создал заметку в Obsidian — здесь мысль уедет в архив</div>
+  </div>`;
+  $('#pager').style.display=items.length>1?'flex':'none';
+  $('#cnt').textContent=(i+1)+' / '+items.length;
+}
+function pg(d){i=(i+d+items.length)%items.length;render()}
+async function mv(id,to){
+  const r=await fetch('/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,to})});
+  if(r.status===423){$('#stage').insertAdjacentHTML('afterbegin',
+    '<div class="card" style="border-color:#a04040;color:#ffd0d0;margin-bottom:12px;cursor:pointer" onclick="location.href=\'/terminal\'">⛔ Склад стоит: разбери входящие →</div>');
+    throw new Error('blocked')}
+  return r.json()
+}
+async function taken(id){
+  $('#c').classList.add('fly');beep(700,.15);
+  try{await mv(id,'archived')}catch(e){return}
+  setTimeout(load,350);
+}
+async function toTrash(id){
+  $('#c').classList.add('fly');beep(180,.12);
+  try{await mv(id,'trash')}catch(e){return}
+  setTimeout(load,350);
+}
+document.addEventListener('keydown',e=>{
+  if(e.key==='ArrowLeft')pg(-1); if(e.key==='ArrowRight')pg(1);
+});
+load();
+</script>
+</body>
+</html>

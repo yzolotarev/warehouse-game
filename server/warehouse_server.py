@@ -11,7 +11,7 @@ import subprocess
 import threading
 import time
 from contextlib import contextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -33,6 +33,7 @@ RITUAL_POINTS = 10    # за инбокс, разобранный до нуля
 DONE_POINTS = 3       # за сделанную задачу
 SERIES_POINTS = 2     # за каждый следующий шаг той же паллеты за день (батчинг)
 REVIEW_POINTS = 25    # за недельную пересборку
+REST_POINTS = 2       # за преднамеренный отдых (кофейня, не чаще раза в 30 мин)
 STALE_FOCUS_DAYS = 3    # фокус без движения → пыль
 STALE_PALLET_DAYS = 30  # паллета без движения → заморозка
 
@@ -471,9 +472,10 @@ def state():
         review_due = _review_due(conn)
         stars = [{"id": r["id"], "text": r["raw_text"]} for r in conn.execute(
             "SELECT id, raw_text FROM boxes WHERE shelf='focus' AND starred=1 ORDER BY id")]
+        rest_until = get_flag(conn, "rest_until")
     return {"counts": counts, "blocked": bool(blocked), "blocked_since": blocked or None,
             "points_total": total, "call_at": CALL_AT, "truck_at": TRUCK_AT,
-            "review_due": review_due, "stars": stars}
+            "review_due": review_due, "stars": stars, "rest_until": rest_until or None}
 
 
 @app.get("/review_data")
@@ -508,6 +510,7 @@ def review_data():
 @app.post("/review_finish")
 def review_finish():
     with db() as conn:
+        _check_blocked(conn)  # пересборка — тоже мыслительная работа: при стопоре стоит
         today = date.today().isoformat()
         if get_flag(conn, "last_week_review") == today:
             return {"ok": True, "points": 0}  # уже пересобран сегодня
@@ -549,6 +552,42 @@ def capture_page():
 @app.get("/racks_page")
 def racks_page():
     return FileResponse(Path(__file__).parent / "racks.html")
+
+
+@app.get("/mind_page")
+def mind_page():
+    return FileResponse(Path(__file__).parent / "mind.html")
+
+
+class RestStart(BaseModel):
+    minutes: int = 5
+
+
+@app.post("/rest_start")
+def rest_start(r: RestStart):
+    """Кофейня: преднамеренный отдых. Главное - встать из-за стола."""
+    mins = max(1, min(r.minutes, 60))
+    until = datetime.now() + timedelta(minutes=mins)
+    with db() as conn:
+        set_flag(conn, "rest_until", until.isoformat(timespec="seconds"))
+    return {"ok": True, "until": until.isoformat(timespec="seconds")}
+
+
+@app.post("/rest_finish")
+def rest_finish():
+    """Отдых дожит до конца → очки. Кулдаун 30 мин против кликер-фарма."""
+    now = datetime.now()
+    with db() as conn:
+        until = get_flag(conn, "rest_until")
+        if not until or now < datetime.fromisoformat(until):
+            return {"ok": False, "points": 0}
+        set_flag(conn, "rest_until", "")
+        last = get_flag(conn, "last_rest_award")
+        if last and (now - datetime.fromisoformat(last)).total_seconds() < 1800:
+            return {"ok": True, "points": 0}
+        award(conn, REST_POINTS, "отдых в кофейне")
+        set_flag(conn, "last_rest_award", now.isoformat(timespec="seconds"))
+    return {"ok": True, "points": REST_POINTS}
 
 
 @app.get("/done_page")

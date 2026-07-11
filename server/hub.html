@@ -54,11 +54,14 @@
   <div class="row" onclick="go('/pallets_page')">
     <div class="ico">🧱</div><div><div class="name">Проекты — дела в несколько шагов</div><div class="flav">паллетная зона · критерий готовности + шаги</div></div><div class="n" id="n-pallet"></div>
   </div>
-  <div class="row" id="r-wait" onclick="go('/terminal')">
+  <div class="row" id="r-wait" onclick="go('/terminal#glow')">
     <div class="ico">⏳</div><div><div class="name">Ожидание — ждёшь других</div><div class="flav">напомнит само, когда пора проверить</div></div><div class="n" id="n-wait"></div>
   </div>
   <div class="row" onclick="go('/racks_page')">
     <div class="ico">🗄</div><div><div class="name">Отложенное — не на этой неделе</div><div class="flav">стеллажи · по контекстам, всплывает на пересборке</div></div><div class="n" id="n-rack"></div>
+  </div>
+  <div class="row" onclick="go('/mind_page')">
+    <div class="ico">💭</div><div><div class="name">Мысли — ждут переноса в заметки</div><div class="flav">полка мыслей · перенеси в Obsidian или выкини</div></div><div class="n" id="n-mind"></div>
   </div>
   <div class="row" onclick="go('/done_page')">
     <div class="ico">✅</div><div><div class="name">Сделано сегодня</div><div class="flav">отгрузка · в <span id="truck">22:00</span> фура увезёт в архив</div></div><div class="n" id="n-done"></div>
@@ -89,7 +92,7 @@ function pickNow(st,glow){
   const c=st.counts||{},h=new Date().getHours(),stars=st.stars||[];
   if(st.blocked)return{act:'⛔ Разблокировать склад: разобрать входящие',why:'физика мира: пока входящие не разобраны, всё стоит',url:'/terminal'};
   if(c.inbox)return{act:`📥 Разобрать входящие (${c.inbox})`,why:'один вопрос на экран, вопросы сами разложат всё по полкам',url:'/terminal'};
-  if(glow.length)return{act:`✨ Проверить ожидание (${glow.length})`,why:'коробки загорелись: пора чекнуть, дождался ли',url:'/terminal'};
+  if(glow.length)return{act:`✨ Проверить ожидание (${glow.length})`,why:'коробки загорелись: пора чекнуть, дождался ли',url:'/terminal#glow'};
   if(st.review_due)return{act:'🧰 Недельная пересборка · +25 ⭐',why:'столп №2: без неё система разваливается за две недели',url:'/review'};
   if(h>=20&&!stars.length&&c.focus)return{act:'⭐ Отметить звезду на завтра',why:'две минуты: выбери главное — утром думать не придётся',url:'/focus_page'};
   if(stars.length)return{act:'★ Делать звезду: '+stars[0].text.slice(0,60),why:'решение принято ещё вчера — просто начни',url:'/focus_page'};
@@ -106,7 +109,7 @@ async function load(){
   set('n-inbox',c.inbox); set('n-focus',c.focus);
   set('n-pallet',(pal.pallets||[]).length+(pal.unformed||[]).length||'');
   set('n-wait',glow.length?c.waiting+' · ✨'+glow.length:c.waiting);
-  set('n-rack',c.rack); set('n-done',c.done);
+  set('n-rack',c.rack); set('n-done',c.done); set('n-mind',c.mind);
   set('pts',st.points_total); set('ptsD',m.points_total||0);
   set('call',st.call_at); set('truck',st.truck_at);
   set('n-review',st.review_due?'пора!':'');

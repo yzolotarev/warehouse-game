@@ -29,7 +29,7 @@
 </head>
 <body><div id="wrap">
   <h1>🎯 Фокус <span style="color:var(--dim);font-weight:normal">= делаю сейчас (≤5)</span></h1>
-  <div id="sub">одна задача на экране - её и делай</div>
+  <div id="sub">одна задача на экране - её и делай · ⭐ = главное на завтра, утром покажу её первой</div>
   <div id="stage"></div>
   <div id="pager" style="display:none">
     <button class="nav" onclick="pg(-1)">‹</button><span id="cnt"></span><button class="nav" onclick="pg(1)">›</button>
@@ -73,6 +73,8 @@ function render(){
     <div class="task">${esc(b.raw_text)}</div>
     <button onclick="done(${b.id})">✅ Сделал +${reward}</button>
     ${starBtn}
+    <button class="nav" style="font-size:13px;padding:10px 12px" title="жду человека/события - уйдёт в Ожидание, напомнит само"
+      onclick="toWait(${b.id})">⏳ Жду</button>
     <button class="nav" style="background:#3a2626;font-size:13px;padding:10px 12px" title="уже неактуально"
       onclick="toTrash(${b.id})">🗑</button>
     ${hint}${staleRow}
@@ -91,6 +93,11 @@ async function mv(id,to){
 async function done(id){
   $('#c').classList.add('fly');beep(700,.15);setTimeout(()=>beep(900,.2),100);
   try{await mv(id,'done')}catch(e){return}
+  setTimeout(load,350);
+}
+async function toWait(id){
+  $('#c').classList.add('fly');beep(300,.12);
+  try{await mv(id,'waiting')}catch(e){return} // grow-таймер 1-3-7-14 по умолчанию
   setTimeout(load,350);
 }
 async function shelve(id){

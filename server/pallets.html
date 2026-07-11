@@ -72,9 +72,9 @@ function render(){
       <div class="raw">🌫 ${esc(b.raw_text)}</div>
       <label>Название проекта</label><input id="t" value="${esc(b.raw_text.slice(0,60))}">
       <label>Готово, когда...</label><input id="cr" placeholder="конкретный образ результата">
-      <label>Первый одношаговый шаг (уедет в 🎯 Фокус)</label><input id="st" placeholder="настолько простой, что не о чем думать">
+      <label>Первый шаг — маленький и конкретный (уедет в 🎯 Фокус)</label><input id="st" placeholder="настолько простой, что не о чем думать">
       <div style="display:flex;gap:10px">
-        <button onclick="form(${b.id})">Оформить</button>
+        <button onclick="formPallet(${b.id})">Оформить</button>
         <button style="background:#2e2e38" onclick="skip()">Позже ›</button>
       </div>
     </div>`;
@@ -130,7 +130,7 @@ function skip(){
   const c=$('#c');c.classList.add('flyl');
   setTimeout(()=>{unformed.push(unformed.shift());render()},280);
 }
-async function form(id){
+async function formPallet(id){
   const title=$('#t').value.trim(), crit=$('#cr').value.trim(), step=$('#st').value.trim();
   if(!title)return;
   $('#c').classList.add('fly');

@@ -17,6 +17,9 @@
     border-color:#8a6d3b;color:#ffd97a;max-width:38vw;overflow:hidden;text-overflow:ellipsis}
   #menu{top:14px;left:16px;pointer-events:auto;cursor:pointer}
   #menu:hover{border-color:var(--amber)}
+  #rest-ask button{background:#2e2e38;color:var(--txt);border:1px solid var(--line);
+    border-radius:7px;padding:7px 12px;font:inherit}
+  #rest-ask button:hover{border-color:var(--amber)}
   #foot{bottom:12px;left:50%;transform:translateX(-50%);color:var(--dim);font-size:11px}
   #tip{display:none;z-index:5}
   #tip .nm{color:var(--amber);font-weight:bold}
@@ -34,6 +37,24 @@
 <div class="plaque" id="pts">⭐ <b id="ptsN">0</b> · сегодня +<span id="ptsD">0</span></div>
 <div class="plaque" id="star" title="звезда дня — выбрана с вечера">★ <span id="starT"></span></div>
 <div class="plaque" id="menu" title="обычный режим: списки и кнопки">☰ меню</div>
+<div class="plaque" id="rest-ask" style="display:none;top:40%;left:50%;transform:translate(-50%,-50%);
+  pointer-events:auto;text-align:center;padding:16px 22px;z-index:8">
+  ☕ Перерыв — главное встать из-за стола<br>
+  <div style="margin-top:10px;display:flex;gap:8px;justify-content:center">
+    <button onclick="startRest(3)" style="cursor:pointer">3 мин</button>
+    <button onclick="startRest(5)" style="cursor:pointer">5 мин</button>
+    <button onclick="startRest(15)" style="cursor:pointer">15 мин</button>
+    <button onclick="document.getElementById('rest-ask').style.display='none'" style="cursor:pointer">✕</button>
+  </div>
+  <div style="margin-top:8px;font-size:11px;color:var(--dim)">медитация, прогулка, кофе — что угодно не за столом · +2 ⭐</div>
+</div>
+<div id="rest" style="display:none;position:fixed;inset:0;background:rgba(20,19,26,.82);z-index:9;
+  flex-direction:column;align-items:center;justify-content:center;gap:10px;backdrop-filter:grayscale(.9) blur(2px)">
+  <div style="font-size:44px">☕</div>
+  <div style="font-size:18px">Склад отдыхает — и ты отдыхай</div>
+  <div id="restT" style="font-size:32px;color:#ffd97a;font-weight:bold">–:–</div>
+  <div style="font-size:12px;color:#8a8a94;cursor:pointer" onclick="clearInterval(restTimer);document.getElementById('rest').style.display='none'">вернуться раньше (без очков)</div>
+</div>
 <div class="plaque" id="blocked">⛔ Склад стоит: приёмка не разобрана — жми сюда</div>
 <div class="plaque" id="review">🧰 Пора пересобрать склад (Week Review) · +25 →</div>
 <div class="plaque" id="tip"><span class="nm"></span> <span class="ct"></span><br><span class="sb"></span></div>
@@ -101,6 +122,9 @@ async function refresh(){
   const st=S.stars||[];
   document.getElementById('star').style.display=st.length?'block':'none';
   document.getElementById('starT').textContent=st.map(s=>s.text).join(' · ');
+  // недожитый отдых переживает перезагрузку страницы
+  if(S.rest_until&&new Date(S.rest_until)>Date.now()
+     &&document.getElementById('rest').style.display==='none')curtain(S.rest_until);
 }
 refresh();setInterval(refresh,12000);
 const cnt=k=>(S.counts&&S.counts[k])||0;
@@ -114,7 +138,7 @@ const ZONES={
   racks:    {x:4,y:7,w:7,h:6, tint:'#4A5568',name:'СТЕЛЛАЖИ',sub:'отложено · позже',url:'/racks_page',n:()=>cnt('rack')},
   pallets:  {x:12,y:7,w:4,h:5,tint:'#C69B7B',name:'ПАЛЛЕТЫ',sub:'проекты',url:'/pallets_page',
              n:()=>(pallets.pallets||[]).length+(pallets.unformed||[]).length},
-  waiting:  {x:0,y:9,w:3,h:4, tint:'#F6AD55',name:'ОЖИДАНИЕ',sub:'ждёшь других',url:'/terminal',n:()=>cnt('waiting')},
+  waiting:  {x:0,y:9,w:3,h:4, tint:'#F6AD55',name:'ОЖИДАНИЕ',sub:'ждёшь других',url:'/terminal#glow',n:()=>cnt('waiting')},
   shipping: {x:17,y:9,w:3,h:4,tint:'#8dff9e',name:'ОТГРУЗКА',sub:'сделано сегодня',url:'/done_page',n:()=>cnt('done')},
 };
 function primaryZone(){ // единственный «громкий» объект экрана (канон: 1 primary action)
@@ -491,9 +515,8 @@ cv.addEventListener('click',e=>{
   if(moved>6)return;
   const k=zoneAt(e.clientX,e.clientY);if(!k)return;
   const z=ZONES[k];
-  if(k==='coffee'){blip(150,.25,'sine',.03);burst(16.5,1.8,'#FF9E7D',8);
-    toast('☕ отдых — тоже работа');return}
-  if(S.blocked&&z.url!=='/terminal'){blip(90,.2,'sawtooth',.03);
+  if(k==='coffee'){blip(150,.25,'sine',.03);burst(16.5,1.8,'#FF9E7D',8);askRest();return}
+  if(S.blocked&&!(z.url&&z.url.startsWith('/terminal'))){blip(90,.2,'sawtooth',.03);
     toast('⛔ склад стоит — сначала разбор приёмки');return}
   squash[k]=tNow;blip(520,.07,'square',.035);blip(760,.05,'triangle',.02);
   burst(z.x+z.w/2,z.y+z.h/2,z.tint,8);
@@ -501,6 +524,31 @@ cv.addEventListener('click',e=>{
 let toastT=null;
 function toast(s){const el=document.getElementById('toast');el.textContent=s;el.style.display='block';
   clearTimeout(toastT);toastT=setTimeout(()=>el.style.display='none',2200);}
+
+/* ================= отдых (кофейня): встань из-за стола ================= */
+let restTimer=null;
+function askRest(){
+  const el=document.getElementById('rest-ask');el.style.display='block';}
+async function startRest(mins){
+  document.getElementById('rest-ask').style.display='none';
+  const r=await(await fetch('/rest_start',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({minutes:mins})})).json();
+  curtain(r.until);}
+function curtain(untilIso){
+  const el=document.getElementById('rest');el.style.display='flex';
+  clearInterval(restTimer);
+  restTimer=setInterval(()=>{
+    const left=(new Date(untilIso)-Date.now())/1000;
+    if(left<=0){clearInterval(restTimer);finishRest();return}
+    document.getElementById('restT').textContent=
+      String(Math.floor(left/60))+':'+String(Math.floor(left%60)).padStart(2,'0');
+  },500);}
+async function finishRest(){
+  document.getElementById('rest').style.display='none';
+  const r=await(await fetch('/rest_finish',{method:'POST'})).json();
+  if(r.points){burst(16.5,1.8,'#FF9E7D',14);blip(660,.15,'sine',.04);
+    toast(`☕ отдохнул — +${r.points} ⭐`);refresh();}
+  else toast('☕ отдых - тоже работа');}
 addEventListener('keydown',e=>{
   if(e.key==='r'||e.key==='R'||e.key==='к'||e.key==='К'){rot=(rot+1)%4;blip(300,.05)}
   if(e.key==='i'||e.key==='I'||e.key==='ш'||e.key==='Ш')location.href='/terminal';});

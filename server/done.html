@@ -59,7 +59,11 @@ function render(){
   $('#cnt').textContent=(i+1)+' / '+items.length;
 }
 function pg(d){i=(i+d+items.length)%items.length;render()}
-async function back(id){await api('/move',{id,to:'focus'});load()}
+async function back(id){
+  const r=await fetch('/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,to:'focus'})});
+  if(r.status===423){$('#stage').insertAdjacentHTML('afterbegin',
+    '<div class="card" style="border-color:#a04040;color:#ffd0d0;margin-bottom:12px;cursor:pointer" onclick="location.href=\'/terminal\'">⛔ Склад стоит: разбери входящие →</div>');return}
+  load()}
 document.addEventListener('keydown',e=>{
   if(e.key==='ArrowLeft')pg(-1); if(e.key==='ArrowRight')pg(1);
 });

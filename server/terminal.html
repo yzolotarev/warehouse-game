@@ -67,10 +67,11 @@
   <div id="undorow" style="display:none;text-align:center;margin-top:2px">
     <button style="flex:none;font-size:13px;padding:8px 14px;background:#2e2e38" onclick="undo()">↶ вернуть последнюю (Backspace)</button>
   </div>
+  <a href="/hub" style="color:#8a8a94;font-size:13px;text-decoration:none;margin-top:auto;text-align:center;padding:10px 0">← в меню склада</a>
 </div>
 <script>
 "use strict";
-let queue=[], cur=null;
+let queue=[], cur=null, focusN=0;
 const $=id=>document.getElementById(id);
 async function api(p,body){const r=await fetch(p,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});return r.json()}
 function beep(f,d){try{const a=beep.ac=beep.ac||new AudioContext(),o=a.createOscillator(),g=a.createGain();
@@ -84,6 +85,7 @@ async function loadMirror(){
     return `<div class="row"><span class="t">${b.born_at.slice(11,16)}</span><span>${src}</span><span>${esc(b.raw_text)}</span></div>`
   }).join('')||'<div class="row"><span class="t"></span><span>сегодня коробок не было</span></div>';
   const st=await api('/state');
+  focusN=(st.counts&&st.counts.focus)||0;
   $('donebar').textContent='Полки: '+Object.entries(st.counts).map(([k,v])=>k+' '+v).join(' · ');
   $('blocked').style.display=st.blocked?'block':'none';
 }
@@ -115,6 +117,9 @@ async function loadQueue(){
   await loadMirror();
   const items=await api('/boxes?shelf=inbox');
   const g=await api('/glow');
+  // прямой вход «проверь ожидание» (#glow): сразу к загоревшимся, без стены инбокса
+  if(location.hash==='#glow'&&g.length){
+    glowOnly=true;glowQ=g;$('mirror').style.display='none';nextItem();return}
   $('gobtn').textContent=`→ разбирать (${items.length}${g.length?' + ✨'+g.length:''})`;
   $('mirror').style.display='block';
 }
@@ -126,7 +131,7 @@ async function loadQueue(){
    Проход 5 «Ждёшь человека?»: да→ожидание / нет→стеллаж (контекст)
    hint = куда уедет коробка при каждом ответе (юзабельность без раздумий) */
 const PASSES=[
-  {q:'Это дело?',hint:'дело = требует от тебя действия · мысль, ссылка, шум — не дело',
+  {q:'Это дело?',hint:'дело = требует от тебя действия (проект — тоже дело) · мысль, ссылка, шум — не дело',
    a:[['✅ Дело',x=>route(x,1)],['🚫 Не дело',x=>route(x,2)]]},
   {q:'Это один конкретный шаг?',hint:'один шаг = сел и сделал · проект = несколько шагов или пока мутно → уедет в Проекты, там разложишь',
    a:[['⚡ Один шаг',x=>route(x,3)],['🧱 Проект',x=>ship(x,'pallet_step')]]},
@@ -159,7 +164,7 @@ async function undo(){
   nextItem();
 }
 let P=PASSES.map(p=>({...p,items:[]}));
-let pass=0, glowQ=[];
+let pass=0, glowQ=[], glowOnly=false;
 function startPasses(items){
   P=PASSES.map(p=>({...p,items:[]}));
   P[0].items=items; pass=0; hist=[]; nextItem();
@@ -170,6 +175,9 @@ function nextItem(){
   while(pass<P.length && P[pass].items.length===0) pass++;
   if(pass>=P.length){
     if(glowQ.length){renderGlow();return}
+    if(glowOnly){ // пришли только за ожиданием - назад к зеркалу, инбокс мог быть непуст
+      glowOnly=false;history.replaceState(null,'',location.pathname);
+      $('triage').style.display='none';loadQueue();return}
     $('triage').style.display='none';$('empty').style.display='block';loadMirror();return}
   cur=P[pass].items[0];
   $('triage').style.display='block';$('empty').style.display='none';
@@ -177,12 +185,22 @@ function nextItem(){
   $('boxmeta').textContent=`проход ${pass+1}/5 · #${cur.id} ${src} · в пачке ещё ${P[pass].items.length}`;
   $('boxtext').textContent=cur.raw_text;
   $('question').textContent=P[pass].q;
-  $('hint').textContent=P[pass].hint||'';
+  let hint=P[pass].hint||'';
+  if(pass===3&&focusN>=5)hint+=` · ⚠ фокус уже полон (${focusN}/5) — честнее «не сейчас»`;
+  $('hint').textContent=hint;
   $('btns').innerHTML='';
   P[pass].a.forEach(([label,fn])=>{
     const b=document.createElement('button');
     b.textContent=label;
     b.onclick=()=>{P[pass].items.shift();beep(420,.05);fn(cur);flyNext()};
+    $('btns').appendChild(b);
+  });
+  // тихие быстрые выходы с любого прохода: уже сделано / выкинуть (клавиши 3-4)
+  [['✔ уже сделано','done'],['🗑','trash']].forEach(([label,shelf])=>{
+    const b=document.createElement('button');
+    b.textContent=label;b.style.cssText='flex:none;font-size:12px;padding:8px 12px;background:#26262e;color:#8a8a94';
+    b.title=shelf==='done'?'сделано вне системы - в отгрузку, +3':'не буду делать / не нужно - в мусор';
+    b.onclick=()=>{P[pass].items.shift();ship(cur,shelf);flyNext()};
     $('btns').appendChild(b);
   });
 }
@@ -245,7 +263,9 @@ document.addEventListener('keydown',e=>{
   if(e.key==='1'&&btns[0])btns[0].click();
   if(e.key==='2'&&btns[1])btns[1].click();
   if(e.key==='3'&&btns[2])btns[2].click();
+  if(e.key==='4'&&btns[3])btns[3].click();
 });
+addEventListener('hashchange',()=>{if(location.hash==='#glow')loadQueue()});
 loadMirror();loadQueue();
 </script>
 </body>
