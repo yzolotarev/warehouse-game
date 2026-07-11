@@ -55,6 +55,7 @@
     <div id="boxtext"></div>
     <div id="question"></div>
     <div id="btns"></div>
+    <div id="hint" style="margin-top:10px;font-size:12px;color:#8a8a94"></div>
     <div id="ctxrow">
       <input id="ctx" placeholder="контекст: @дом, @комп, @звонки...">
       <button onclick="moveCtx()">→</button>
@@ -93,6 +94,7 @@ function renderGlow(){
   $('boxmeta').textContent=`✨ загорелось в ожидании · осталось ${glowQ.length}`;
   $('boxtext').textContent=b.raw_text;
   $('question').textContent='Дождался?';
+  $('hint').textContent='готово → Сделано · жду дальше → напомнит позже · протухло → мусор';
   $('btns').innerHTML='';
   [['✅ Готово','done'],['⏳ Жду дальше','wait'],['🗑 Протухло','delete']].forEach(([label,action])=>{
     const btn=document.createElement('button');
@@ -118,16 +120,22 @@ async function loadQueue(){
 }
 /* Конвейерные проходы: один вопрос применяется КО ВСЕЙ пачке, потом следующий.
    Проход 1 «Это дело?»: дело→дальше / не дело→ведро notask
-   Проход 2 «Мысль/мусор?» по ведру notask (сразу в полку)
-   Проход 3 «Понятно, что делать?»: мутная→паллета (в полку) / понятно→дальше
+   Проход 2 «Один шаг или проект?»: один шаг→дальше / проект→паллета (в полку)
+   Проход 3 «Мысль/мусор?» по ведру notask (сразу в полку)
    Проход 4 «На этой неделе?»: да→фокус (в полку) / нет→дальше
-   Проход 5 «Ждёшь человека?»: да→ожидание / нет→стеллаж (контекст) */
+   Проход 5 «Ждёшь человека?»: да→ожидание / нет→стеллаж (контекст)
+   hint = куда уедет коробка при каждом ответе (юзабельность без раздумий) */
 const PASSES=[
-  {q:'Это дело?',a:[['✅ Дело',x=>route(x,1)],['🚫 Не дело',x=>route(x,2)]]},
-  {q:'Понятно, что конкретно делать?',a:[['👌 Понятно',x=>route(x,3)],['🌫 Мутная',x=>ship(x,'pallet_step')]]},
-  {q:'Оставить как мысль?',a:[['💭 Мысль',x=>ship(x,'mind')],['🗑 Мусор',x=>ship(x,'trash')]]},
-  {q:'Займёшься на этой неделе?',a:[['✅ Да',x=>ship(x,'focus')],['🕰 Не сейчас',x=>route(x,4)]]},
-  {q:'Ждёшь другого человека?',a:[['⏳ Да, жду',x=>askWait(x)],['🚫 Нет',x=>askCtx(x)]]}
+  {q:'Это дело?',hint:'дело = требует от тебя действия · мысль, ссылка, шум — не дело',
+   a:[['✅ Дело',x=>route(x,1)],['🚫 Не дело',x=>route(x,2)]]},
+  {q:'Это один конкретный шаг?',hint:'один шаг = сел и сделал · проект = несколько шагов или пока мутно → уедет в Проекты, там разложишь',
+   a:[['⚡ Один шаг',x=>route(x,3)],['🧱 Проект',x=>ship(x,'pallet_step')]]},
+  {q:'Оставить как мысль?',hint:'мысль → полка мыслей (потом в заметки) · мусор исчезает навсегда',
+   a:[['💭 Мысль',x=>ship(x,'mind')],['🗑 Мусор',x=>ship(x,'trash')]]},
+  {q:'Займёшься на этой неделе?',hint:'да → Фокус (делаю сейчас) · не сейчас → ещё один вопрос',
+   a:[['✅ Да',x=>ship(x,'focus')],['🕰 Не сейчас',x=>route(x,4)]]},
+  {q:'Ждёшь другого человека?',hint:'да → Ожидание, напомнит само · нет → Отложенное, всплывёт на недельной пересборке',
+   a:[['⏳ Да, жду',x=>askWait(x)],['🚫 Нет',x=>askCtx(x)]]}
 ];
 let hist=[];
 function route(item,toPass){
@@ -169,6 +177,7 @@ function nextItem(){
   $('boxmeta').textContent=`проход ${pass+1}/5 · #${cur.id} ${src} · в пачке ещё ${P[pass].items.length}`;
   $('boxtext').textContent=cur.raw_text;
   $('question').textContent=P[pass].q;
+  $('hint').textContent=P[pass].hint||'';
   $('btns').innerHTML='';
   P[pass].a.forEach(([label,fn])=>{
     const b=document.createElement('button');
@@ -190,6 +199,7 @@ async function ship(item,shelf,ctx,extra){
 }
 function askWait(item){
   $('question').textContent='Как часто напоминать?';
+  $('hint').textContent='коробка уедет в Ожидание и сама загорится, когда пора проверить';
   $('btns').innerHTML='';
   [['🌱 Реже и реже (1·3·7·14 дн.)',{wait_mode:'grow'}],
    ['⏰ Ближе к сроку (14·7·3·1 дн.)',{wait_mode:'shrink'}],
@@ -211,6 +221,7 @@ function askWait(item){
 }
 function askCtx(item){
   $('btns').innerHTML='';$('question').textContent='Какой контекст?';
+  $('hint').textContent='контекст = где это делается (@дом, @комп, @звонки) · коробка ляжет в Отложенное и всплывёт на пересборке';
   $('ctxrow').style.display='flex';$('ctx').focus();
   $('ctxrow').dataset.id=item.id;
   window._ctxItem=item;

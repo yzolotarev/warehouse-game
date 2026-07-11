@@ -15,6 +15,8 @@
   #pts b{color:var(--amber)}
   #star{display:none;top:48px;right:16px;pointer-events:auto;cursor:pointer;
     border-color:#8a6d3b;color:#ffd97a;max-width:38vw;overflow:hidden;text-overflow:ellipsis}
+  #menu{top:14px;left:16px;pointer-events:auto;cursor:pointer}
+  #menu:hover{border-color:var(--amber)}
   #foot{bottom:12px;left:50%;transform:translateX(-50%);color:var(--dim);font-size:11px}
   #tip{display:none;z-index:5}
   #tip .nm{color:var(--amber);font-weight:bold}
@@ -31,6 +33,7 @@
 <canvas id="c"></canvas>
 <div class="plaque" id="pts">⭐ <b id="ptsN">0</b> · сегодня +<span id="ptsD">0</span></div>
 <div class="plaque" id="star" title="звезда дня — выбрана с вечера">★ <span id="starT"></span></div>
+<div class="plaque" id="menu" title="обычный режим: списки и кнопки">☰ меню</div>
 <div class="plaque" id="blocked">⛔ Склад стоит: приёмка не разобрана — жми сюда</div>
 <div class="plaque" id="review">🧰 Пора пересобрать склад (Week Review) · +25 →</div>
 <div class="plaque" id="tip"><span class="nm"></span> <span class="ct"></span><br><span class="sb"></span></div>
@@ -38,6 +41,8 @@
 <div class="plaque" id="foot">зов <span id="callT"></span> · фура <span id="truckT"></span> · ЛКМ тащить · колесо зум · R повернуть · I разбор</div>
 <script>
 "use strict";
+// меню-режим стартовый? (переключается в самом меню; /#world - явный вход в мир)
+if(localStorage.whStart==='menu'&&location.hash!=='#world'){location.replace('/hub');throw new Error('redirect')}
 /* ================= iso engine ================= */
 const cv=document.getElementById('c'),ctx=cv.getContext('2d');
 let W,H,DPR=Math.min(devicePixelRatio||1,2);
@@ -502,6 +507,7 @@ addEventListener('keydown',e=>{
 document.getElementById('blocked').onclick=()=>location.href='/terminal';
 document.getElementById('review').onclick=()=>location.href='/review';
 document.getElementById('star').onclick=()=>location.href='/focus_page';
+document.getElementById('menu').onclick=()=>location.href='/hub';
 </script>
 </body>
 </html>

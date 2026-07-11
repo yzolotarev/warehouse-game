@@ -39,8 +39,8 @@
 </style>
 </head>
 <body><div id="wrap">
-  <h1>🧱 Паллетная зона <span style="color:var(--dim);font-weight:normal">= Проекты</span></h1>
-  <div id="sub">многошаговые задачи. Здесь мутная задача получает цель («готово, когда...») и следующий конкретный шаг. Шаг уходит в Фокус - список «делаю сейчас».</div>
+  <h1>🧱 Проекты <span style="color:var(--dim);font-weight:normal">= дела в несколько шагов (паллетная зона)</span></h1>
+  <div id="sub">здесь проект получает цель («готово, когда...») и следующий конкретный шаг. Шаг уходит в Фокус - список «делаю сейчас».</div>
   <div id="stage"></div>
   <div id="pager" style="display:none">
     <button onclick="pg(-1)">‹</button><span id="cnt"></span><button onclick="pg(1)">›</button>
@@ -68,9 +68,9 @@ function render(){
   if(unformed.length){
     const b=unformed[0];
     $('#stage').innerHTML=`<div class="card ${inCls}" id="c">
-      <div style="color:var(--dim);font-size:12px;margin-bottom:6px">мутных в очереди: ${unformed.length}</div>
+      <div style="color:var(--dim);font-size:12px;margin-bottom:6px">новых проектов на оформление: ${unformed.length}</div>
       <div class="raw">🌫 ${esc(b.raw_text)}</div>
-      <label>Название паллеты</label><input id="t" value="${esc(b.raw_text.slice(0,60))}">
+      <label>Название проекта</label><input id="t" value="${esc(b.raw_text.slice(0,60))}">
       <label>Готово, когда...</label><input id="cr" placeholder="конкретный образ результата">
       <label>Первый одношаговый шаг (уедет в 🎯 Фокус)</label><input id="st" placeholder="настолько простой, что не о чем думать">
       <div style="display:flex;gap:10px">
@@ -81,7 +81,7 @@ function render(){
     return;
   }
   const total=pallets.length+frozen.length;
-  if(!total){$('#stage').innerHTML='<div class="card muted">Паллет нет. Арбитраж пуст. ✨</div>';return}
+  if(!total){$('#stage').innerHTML='<div class="card muted">Проектов нет. ✨ Проект рождается на разборе входящих: ответ «🧱 Проект» приводит его сюда.</div>';return}
   if(pi>=pallets.length){renderFrozen(frozen[pi-pallets.length],total);return}
   const p=pallets[pi];
   const steps=p.steps.map(s=>`<div class="step ${['done','archived'].includes(s.shelf)?'done':''}">
