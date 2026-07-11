@@ -90,6 +90,9 @@ function render(){
   const idle=p.idle_days>7?`<div class="crit" style="color:#e6a08e">🕸 без движения ${p.idle_days} дн. (месяц — и уедет в морозилку)</div>`:'';
   const series=p.done_today?`<div class="crit" style="color:var(--vio)">🔥 серия: сегодня по этой паллете уже сделано ${p.done_today} — следующий шаг даст +${seriesPts} сверху</div>`:
     `<div class="crit">💡 второй шаг этой паллеты за день пойдёт серией: +${seriesPts} к очкам</div>`;
+  const noteBtn=p.note_path
+    ?`<button style="background:#2e3a2e;font-size:13px;padding:8px 12px" onclick="toggleNote(${p.id})">📖 Заметка проекта</button>`
+    :`<button style="background:#2e2e38;font-size:13px;padding:8px 12px" onclick="showAttach(${p.id})">📎 Привязать заметку</button>`;
   $('#stage').innerHTML=`<div class="card ${inCls}">
     <div class="ptitle">🧱 ${esc(p.title)}</div>
     <div class="crit">Готово, когда: ${esc(p.done_criteria||'—')}</div>
@@ -98,7 +101,18 @@ function render(){
       <input id="ns" placeholder="следующий одношаговый шаг" style="margin:0">
       <button onclick="addStep(${p.id})">→ 🎯</button>
     </div>
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <input id="na" placeholder="дописать контекст в заметку проекта (уйдёт в Obsidian)" style="margin:0">
+      <button onclick="noteAppend(${p.id})" title="write-only: только дописывает в конец">＋📝</button>
+    </div>
+    <div id="notewrap" style="display:none">
+      <div id="notefiles" style="font-size:11px;color:var(--dim);margin-top:8px"></div>
+      <pre id="notebody" style="text-align:left;font-size:12px;line-height:1.45;max-height:280px;overflow:auto;
+        background:#242430;border:1px solid var(--line);border-radius:8px;padding:12px;white-space:pre-wrap"></pre>
+    </div>
+    <div id="attachwrap" style="display:none;margin-top:8px"></div>
     <div style="margin-top:10px">
+      ${noteBtn}
       <button style="background:#2e3e4a;font-size:13px;padding:8px 12px" onclick="freeze(${p.id},true)">🧊 Заморозить проект</button>
       <button style="background:#4a2e2e;font-size:13px;padding:8px 12px" onclick="delPallet(${p.id})">🗑 Не нужен</button>
     </div>
@@ -130,6 +144,40 @@ function pg(d){const n=pallets.length+frozen.length;pi=(pi+d+n)%n;inCls=d>0?'inl
 function skip(){
   const c=$('#c');c.classList.add('flyl');
   setTimeout(()=>{unformed.push(unformed.shift());render()},280);
+}
+async function toggleNote(pid){
+  const w=$('#notewrap');
+  if(w.style.display==='none'){
+    const d=await api('/pallet_note?id='+pid);
+    $('#notebody').textContent=d.content||'(заметка пуста)';
+    $('#notefiles').textContent=d.files.length?('📁 в папке проекта: '+d.files.join(' · ')):'';
+    w.style.display='block';
+  } else w.style.display='none';
+}
+async function noteAppend(pid){
+  const v=$('#na').value.trim(); if(!v)return;
+  await api('/pallet/note_append',{id:pid,text:v});
+  $('#na').value=''; beep(620,.1);
+  if($('#notewrap').style.display!=='none'){ // заметка открыта - обновим
+    const d=await api('/pallet_note?id='+pid);
+    $('#notebody').textContent=d.content||'';
+  }
+  load(); // note_path мог появиться - перерисуем кнопку
+}
+async function showAttach(pid){
+  const files=await api('/obsidian_files');
+  const opts=files.map(f=>`<option value="${f.path.replace(/"/g,'&quot;')}">${f.name}</option>`).join('');
+  $('#attachwrap').innerHTML=files.length
+    ?`<div style="display:flex;gap:8px">
+        <select id="af" style="flex:1;background:#242430;color:var(--txt);border:1px solid var(--line);border-radius:7px;padding:8px">${opts}</select>
+        <button onclick="doAttach(${pid})">📎 Привязать</button>
+      </div><div style="font-size:11px;color:var(--dim);margin-top:4px">или просто допиши контекст выше — файл создастся сам</div>`
+    :'<div style="font-size:12px;color:var(--dim)">папка проектов Obsidian пуста или недоступна · допиши контекст выше — файл создастся сам</div>';
+  $('#attachwrap').style.display='block';
+}
+async function doAttach(pid){
+  await api('/pallet/note_attach',{id:pid,path:$('#af').value});
+  beep(560,.1); load();
 }
 async function trashUnformed(id){
   // несформированный проект = обычный товар на полке pallet_step: в мусор через /move
