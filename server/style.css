@@ -104,10 +104,11 @@ details.drawer > .drawer-body {
 /* переключатель темы (плавающий, ghost) */
 #themeTgl {
   position: fixed; right: 14px; bottom: 12px; z-index: 50;
-  font-size: 15px; color: var(--dim); cursor: pointer; user-select: none;
-  padding: 6px 9px; border-radius: 8px; opacity: .75;
+  font-size: 17px; color: var(--txt); cursor: pointer; user-select: none;
+  padding: 8px 12px; border-radius: 10px;
+  background: var(--card); border: 1px solid var(--line); box-shadow: var(--card-shadow);
 }
-#themeTgl:hover { opacity: 1; background: var(--accent-soft); }
+#themeTgl:hover { border-color: var(--accent); background: var(--accent-soft); }
 
 /* иллюстрации пустых состояний (Gemini, прозрачный фон) */
 .empty-ill { display: block; margin: 0 auto 10px; width: 96px; height: auto; opacity: .9; }
