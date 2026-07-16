@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <link rel="stylesheet" href="/style.css">
-<script src="/theme.js"></script>
+<script src="/theme.js"></script><script src="/storozh.js"></script><script src="/juice.js"></script>
 <title>🧱 Паллетная зона</title>
 <style>
   html,body{margin:0;height:100%;display:flex;flex-direction:column;align-items:center;overflow:hidden}
@@ -17,6 +17,8 @@
   .crit{font-size:13px;color:var(--dim);margin:6px 0 12px}
   .step{font-size:15px;line-height:22px;padding:3px 0}
   .step.done{opacity:.5;text-decoration:line-through}
+  .wbtn{cursor:pointer;opacity:.3;margin-left:8px}
+  .step:hover .wbtn{opacity:1}
   .muted{color:var(--dim);font-size:14px;text-align:center;padding:30px 0}
   #pager{display:flex;align-items:center;justify-content:center;gap:16px;margin-top:14px}
   #cnt{color:var(--dim);font-size:13px}
@@ -60,11 +62,23 @@ function esc(s){const d=document.createElement('div');d.textContent=s;return d.i
 async function load(){
   const d=await api('/pallets');
   unformed=d.unformed; pallets=d.pallets; frozen=d.frozen||[]; seriesPts=d.series_points||2;
+  // deep-link из тяги («🥛 подоить проект N») → открыть сразу нужную паллету
+  const m=location.hash.match(/^#p(\d+)/);
+  if(m){const idx=pallets.findIndex(p=>String(p.id)===m[1]); if(idx>=0)pi=idx;
+    history.replaceState(null,'','/pallets_page');}
   pi=Math.min(pi,Math.max(0,pallets.length+frozen.length-1));
   render();
 }
 let inCls='in';
 let mode='list'; // list = проекты; form = оформление новых
+// Оформление - по одному вопросу (как терминал): минимальная окрестность
+// внимания, Enter = дальше. formVals копит ответы, пока идём по FORM_STEPS.
+const FORM_STEPS=[
+  {key:'t', label:'Название проекта', ph:''},
+  {key:'cr', label:'Готово, когда...', ph:'конкретный образ результата'},
+  {key:'st', label:'Первый шаг — маленький и конкретный', ph:'настолько простой, что не о чем думать'}
+];
+let formStep=0, formVals={}, formItemId=null;
 function render(){
   $('#pager').style.display='none';
   const total=pallets.length+frozen.length;
@@ -73,19 +87,25 @@ function render(){
   if(mode==='form'){
     loadBar();
     const b=unformed[0];
+    if(formItemId!==b.id){ // новый товар на оформление - сброс шагов
+      formItemId=b.id; formStep=0; formVals={t:b.raw_text.slice(0,60), cr:'', st:''};
+    }
+    const step=FORM_STEPS[formStep];
     $('#stage').innerHTML=`<div class="card ${inCls}" id="c">
-      <div style="color:var(--dim);font-size:12px;margin-bottom:6px">новых проектов на оформление: ${unformed.length}</div>
+      <div style="color:var(--dim);font-size:12px;margin-bottom:6px">новых проектов на оформление: ${unformed.length} · шаг ${formStep+1}/${FORM_STEPS.length}</div>
       <div class="raw">🌫 ${esc(b.raw_text)}</div>
-      <label>Название проекта</label><input id="t" value="${esc(b.raw_text.slice(0,60))}">
-      <label>Готово, когда...</label><input id="cr" placeholder="конкретный образ результата">
-      <label>Первый шаг — маленький и конкретный (уедет в 🎯 Фокус)</label><input id="st" placeholder="настолько простой, что не о чем думать">
-      <div style="display:flex;gap:10px">
-        <button class="b-primary" onclick="formPallet(${b.id})">Оформить</button>
+      <label>${step.label}</label>
+      <input id="fsInput" placeholder="${step.ph}" value="${esc(formVals[step.key]||'')}"
+        onkeydown="if(event.key==='Enter')formStepNext()">
+      <div style="display:flex;gap:10px;margin-top:10px">
+        <button class="b-primary" onclick="formStepNext()">${formStep<FORM_STEPS.length-1?'Дальше →':'Оформить'}</button>
+        ${formStep>0?'<button class="b-ghost" onclick="formStepBack()">‹ назад</button>':''}
         <button class="b-ghost" onclick="skip()">Позже ›</button>
         <button class="b-danger" title="передумал — проекта не будет" onclick="trashUnformed(${b.id})">🗑 Не нужен</button>
       </div>
       <div class="meta" style="margin-top:12px;cursor:pointer" onclick="mode='list';render()">‹ к проектам (оформлю позже)</div>
     </div>`;
+    const inp=$('#fsInput'); inp.focus(); inp.select();
     return;
   }
   const banner=unformed.length
@@ -94,8 +114,30 @@ function render(){
   if(!total){loadBar();$('#stage').innerHTML='<div class="card muted"><img class="empty-ill" src="/assets/empty-pallets.png" alt="">Проектов нет. ✨ Проект рождается на разборе входящих: ответ «🧱 Проект» приводит его сюда.</div>';return}
   if(pi>=pallets.length){renderFrozen(frozen[pi-pallets.length],total);return}
   const p=pallets[pi];
-  const steps=p.steps.map(s=>`<div class="step ${['done','archived'].includes(s.shelf)?'done':''}">
-    ${['done','archived'].includes(s.shelf)?'✅':(s.shelf==='focus'?'🎯':'·')} ${esc(s.raw_text)}</div>`).join('')||'<div class="muted">шагов нет</div>';
+  // сегменты шагов: очередь (заряжено, ждёт фокуса) · в работе · ждунские · история
+  const queue=p.steps.filter(s=>s.shelf==='pallet_step');
+  const inFocus=p.steps.filter(s=>s.shelf==='focus');
+  const waitSteps=p.steps.filter(s=>s.shelf==='waiting');
+  const hist=p.steps.filter(s=>['done','archived'].includes(s.shelf));
+  const steps=(hist.map(s=>`<div class="step done">✅ ${esc(s.raw_text)}</div>`).join('')
+    +waitSteps.map(s=>`<div class="step">⏳ ${esc(s.raw_text)}</div>`).join(''))
+    ||'<div class="muted">пока пусто</div>';
+  // авто-«что было»: последний сделанный шаг из moves — рисуется сам, журнал не веду
+  const whatLine=p.last_done
+    ?`<div class="meta" style="margin-top:6px">последнее: «${esc(p.last_done.text)}» · ${p.last_done.days===0?'сегодня':p.last_done.days+'д назад'}</div>`:'';
+  // крошка «на чём встал» — опциональная, чаще пустая; для возврата на плохую голову
+  const crumbLine=p.breadcrumb
+    ?`<div class="meta" style="margin-top:4px;color:var(--sand)">🔖 встал на: ${esc(p.breadcrumb)} <span class="wbtn" style="opacity:.5" onclick="editCrumb(${p.id})">✏️</span></div>`
+    :`<div class="meta" style="margin-top:4px;opacity:.55;cursor:pointer" onclick="editCrumb(${p.id})">+ 🔖 пометка «на чём встал»</div>`;
+  const focusBlock=inFocus.length
+    ?`<div class="crit" style="color:var(--vio);margin-top:10px">🎯 в работе: ${inFocus.map(s=>esc(s.raw_text)).join(' · ')}</div>`:'';
+  // СЛЕДУЮЩИЙ ШАГ = голова очереди; пусто и ничего в работе → проект встал, зови доение
+  const nextBlock=queue.length
+    ?`<div class="crit" style="color:var(--accent);font-weight:600;margin-top:10px">СЛЕДУЮЩИЙ ШАГ:</div>`
+      +queue.map(s=>`<div class="step">🔹 ${esc(s.raw_text)}
+        <span class="wbtn" title="взять в фокус — делать сейчас" onclick="stepFocus(${s.id})">🎯</span>
+        <span class="wbtn" title="жду ответа/события — в Ожидание" onclick="stepWait(${s.id})">⏳</span></div>`).join('')
+    :(inFocus.length?'':`<div class="crit" style="color:var(--sand);margin-top:10px">🥛 очередь пуста — задай следующий шаг, иначе проект встанет</div>`);
   const idle=p.idle_days>7?`<div class="crit" style="color:var(--sand)">🕸 без движения ${p.idle_days} дн. (месяц — и уедет в морозилку)</div>`:'';
   const series=p.done_today?`<div class="crit" style="color:var(--vio)">🔥 серия: сегодня по этой паллете уже сделано ${p.done_today} — следующий шаг даст +${seriesPts} сверху</div>`:
     `<div class="crit">💡 второй шаг этой паллеты за день пойдёт серией: +${seriesPts} к очкам</div>`;
@@ -107,14 +149,23 @@ function render(){
   $('#stage').innerHTML=banner+`<div class="card ${inCls}">
     <div class="ptitle">${esc(p.title)}</div>
     ${idle}
+    ${whatLine}
+    ${crumbLine}
+    ${focusBlock}
+    ${nextBlock}
     <div style="display:flex;gap:8px;margin-top:14px">
       <input id="ns" placeholder="следующий шаг — маленький и конкретный" style="margin:0">
-      <button class="b-primary" style="white-space:nowrap" onclick="addStep(${p.id})">→ 🎯 В фокус</button>
+      <button class="b-primary" style="white-space:nowrap" title="в очередь проекта — заряженный следующий шаг (потом 🎯 в фокус)" onclick="addStep(${p.id})">＋ в очередь</button>
+      <button class="b-ghost" style="white-space:nowrap" title="ждунческий шаг: письмо, ответ, событие — сразу в Ожидание, напомнит само" onclick="addStepWait(${p.id})">→ ⏳</button>
     </div>
     ${seriesHint}
     <details class="drawer" style="margin-top:14px">
       <summary>Цель и шаги (${nDone}/${nSteps})</summary>
       <div class="drawer-body">
+        <div id="purposewrap">${(p.purpose||p.principles)?`
+          <div class="crit">Зачем: ${esc(p.purpose||'—')}</div>
+          <div class="crit">Правила: ${esc(p.principles||'—')} <span class="wbtn" style="opacity:.5" onclick="editPurpose(${p.id})">✏️</span></div>
+        `:`<div class="meta" style="cursor:pointer" onclick="editPurpose(${p.id})">+ зачем и по каким правилам (необязательно)</div>`}</div>
         <div class="crit">Готово, когда: ${esc(p.done_criteria||'—')}</div>
         ${steps}
       </div>
@@ -141,6 +192,8 @@ function render(){
       <div class="drawer-body">
         <button class="b-ghost" onclick="bump(${p.id})" title="клавиша P">📌 На первое место</button>
         <button class="b-ghost" onclick="freeze(${p.id},true)">🧊 Заморозить проект</button>
+        <button class="b-ghost" title="творческие шаги не дают 🎬-минут: интерес — сам себе награда"
+          onclick="setCreative(${p.id},${p.creative?'false':'true'})">${p.creative?'🎨 творческий ✓ (без 🎬)':'🎨 сделать творческим'}</button>
         <button class="b-danger" onclick="delPallet(${p.id})">🗑 Не нужен</button>
       </div>
     </details>
@@ -165,6 +218,21 @@ async function freeze(id,fr){
   await api('/pallet/freeze',{id,frozen:fr});
   beep(fr?240:600,.12); load();
 }
+function editPurpose(pid){
+  const p=curPallet(); if(!p)return;
+  $('#purposewrap').innerHTML=`
+    <label>Зачем это вообще</label><input id="pped" value="${esc(p.purpose||'')}" placeholder="чем мерить решения по ходу">
+    <label>По каким правилам</label><input id="pred" value="${esc(p.principles||'')}" placeholder="я бы дал кому угодно полную свободу это делать, при условии что...">
+    <button class="b-sec" style="margin-top:6px" onclick="savePurpose(${pid})">💾 Сохранить</button>`;
+}
+async function savePurpose(pid){
+  await api('/pallet/purpose',{id:pid,purpose:$('#pped').value.trim(),principles:$('#pred').value.trim()});
+  beep(620,.1); load();
+}
+async function setCreative(id,cr){
+  await api('/pallet/creative',{id,creative:cr});
+  beep(cr?820:340,.12); load();
+}
 async function delPallet(id){
   if(!confirm('Удалить проект? Несделанные шаги уедут в мусор.'))return;
   const r=await api('/pallet/delete',{id});
@@ -176,9 +244,11 @@ function skip(){
   setTimeout(()=>{unformed.push(unformed.shift());render()},280);
 }
 let noteHash=null;
+const BRAINSTORM_TPL="## Куски (брейншторм)\nвытряхнуть всё, что вообще нужно для готовности - без порядка\n\n## Порядок\nчто из брейншторма идёт первым, что зависит от чего\n\n## Внешние зависимости\nчей вход нужен, было ли похожее раньше";
 async function noteLoad(pid){
   const d=await api('/pallet_note?id='+pid);
   $('#notebody').value=d.content||'';
+  $('#notebody').placeholder=d.content?'':BRAINSTORM_TPL;
   noteHash=d.hash;
   $('#notefiles').textContent=d.files.length?('📁 в папке проекта: '+d.files.join(' · ')):'';
   $('#notesave').style.display='none';
@@ -225,12 +295,24 @@ async function trashUnformed(id){
   await api('/move',{id,to:'trash'});
   setTimeout(()=>{if(unformed.length<=1)mode='list';load()},280);
 }
-async function formPallet(id){
-  const title=$('#t').value.trim(), crit=$('#cr').value.trim(), step=$('#st').value.trim();
+function formStepNext(){
+  const v=$('#fsInput').value;
+  formVals[FORM_STEPS[formStep].key]=v;
+  if(formStep===0&&!v.trim())return; // название обязательно, дальше не пускаем
+  if(formStep<FORM_STEPS.length-1){formStep++;render();return}
+  submitForm(unformed[0].id);
+}
+function formStepBack(){
+  formVals[FORM_STEPS[formStep].key]=$('#fsInput').value;
+  formStep--;render();
+}
+async function submitForm(id){
+  const title=(formVals.t||'').trim();
   if(!title)return;
   $('#c').classList.add('fly');
   beep(560,.12);
-  await api('/pallet',{title,done_criteria:crit,from_box:id,first_step:step});
+  await api('/pallet',{title,done_criteria:(formVals.cr||'').trim(),from_box:id,first_step:(formVals.st||'').trim()});
+  formItemId=null; // сброс - следующий товар начнёт оформление с шага 1
   setTimeout(()=>{if(unformed.length<=1)mode='list';load()},280);
 }
 function beep(f,d){try{const a=beep.ac=beep.ac||new AudioContext(),o=a.createOscillator(),g=a.createGain();
@@ -239,7 +321,30 @@ function beep(f,d){try{const a=beep.ac=beep.ac||new AudioContext(),o=a.createOsc
 async function addStep(pid){
   const v=$('#ns').value.trim(); if(!v)return;
   await api('/pallet/step',{pallet_id:pid,text:v});
+  window.juice&&juice('milk');
   load();
+}
+async function stepFocus(id){
+  // тянем заряженный шаг из очереди проекта в фокус — «делаю сейчас»
+  try{await api('/move',{id,to:'focus'})}catch(e){return}
+  beep(560,.1);window.juice&&juice('focus');load();
+}
+function editCrumb(pid){
+  const p=curPallet();
+  const v=prompt('🔖 На чём встал / почему (пусто — стереть):', (p&&p.breadcrumb)||'');
+  if(v===null)return;
+  api('/pallet/breadcrumb',{id:pid,text:v.trim()}).then(load);
+}
+async function stepWait(id){
+  try{await api('/move',{id,to:'waiting'})}catch(e){return}
+  beep(300,.12);load();
+}
+async function addStepWait(pid){
+  const v=$('#ns').value.trim(); if(!v)return;
+  // шаг рождается в фокусе и тут же уезжает в Ожидание - grow-таймер 1-3-7-14
+  let r;try{r=await api('/pallet/step',{pallet_id:pid,text:v})}catch(e){return}
+  try{await api('/move',{id:r.step_id,to:'waiting'})}catch(e){}
+  beep(300,.12);load();
 }
 function curPallet(){
   if(unformed.length)return null;

@@ -19,6 +19,8 @@
   #menu:hover{border-color:var(--amber)}
   #wtheme{bottom:12px;right:16px;pointer-events:auto;cursor:pointer;font-size:15px}
   #wtheme:hover{border-color:var(--amber)}
+  #rotBtn{bottom:52px;right:16px;pointer-events:auto;cursor:pointer;font-size:15px}
+  #rotBtn:hover{border-color:var(--amber)}
   body.day .plaque{background:rgba(250,246,240,.9);color:#3a352c;border-color:#b5ad9d}
   body.day #pts b{color:#8a5a00}
   body.day #star{color:#8a5a00;border-color:#c9a24d}
@@ -52,6 +54,7 @@
 <div class="plaque" id="star" title="звезда дня — выбрана с вечера">★ <span id="starT"></span></div>
 <div class="plaque" id="menu" title="обычный режим: списки и кнопки">☰ меню</div>
 <div class="plaque" id="wtheme" title="тема: авто (по времени) → светлая → тёмная">◐</div>
+<div class="plaque" id="rotBtn" title="повернуть камеру (или клавиша R)">⟳</div>
 <div class="plaque" id="dayloadLbl">⏳</div>
 <div id="dayload"><i></i></div>
 <div class="plaque" id="rest-ask" style="display:none;top:40%;left:50%;transform:translate(-50%,-50%);
@@ -77,6 +80,7 @@
 <div class="plaque" id="tip"><span class="nm"></span> <span class="ct"></span><br><span class="sb"></span></div>
 <div class="plaque" id="toast"></div>
 <div class="plaque" id="foot">зов <span id="callT"></span> · фура <span id="truckT"></span> · ЛКМ тащить · колесо зум · R повернуть · I разбор</div>
+<script src="/storozh.js"></script>
 <script>
 "use strict";
 // меню (constrained front door — одна рекомендация вместо стены задач) - стартовое по умолчанию;
@@ -622,8 +626,10 @@ async function finishRest(){
     toast(`☕ отдохнул — +${r.points} ⭐`);refresh();}
   else toast('☕ отдых - тоже работа');}
 addEventListener('keydown',e=>{
+  if(e.target.closest('input,textarea'))return; // печать в чате сторожа - не команды миру
   if(e.key==='r'||e.key==='R'||e.key==='к'||e.key==='К'){rot=(rot+1)%4;blip(300,.05)}
   if(e.key==='i'||e.key==='I'||e.key==='ш'||e.key==='Ш')location.href='/terminal';});
+document.getElementById('rotBtn').onclick=()=>{rot=(rot+1)%4;blip(300,.05)};
 document.getElementById('blocked').onclick=()=>location.href='/terminal';
 document.getElementById('review').onclick=()=>location.href='/review';
 document.getElementById('star').onclick=()=>location.href='/focus_page';

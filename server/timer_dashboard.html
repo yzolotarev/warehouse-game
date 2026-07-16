@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="/style.css">
+<script src="/theme.js"></script><script src="/storozh.js"></script>
+<title>⏱ Таймер — статистика</title>
+<style>
+  html,body{margin:0;min-height:100%;display:flex;flex-direction:column;align-items:center;overflow:auto}
+  #wrap{width:min(640px,94vw);padding:26px 0}
+  h1{margin:0}
+  #sub{margin:4px 0 18px;color:var(--dim);font-size:13px}
+  .toggle{display:flex;gap:4px;margin-bottom:16px;justify-content:center}
+  .toggle button{padding:4px 14px;border-radius:6px;cursor:pointer;border:1px solid var(--line);
+    background:var(--card);color:var(--fg)}
+  .toggle button.active{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+  .row{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 16px;
+    margin-bottom:8px;box-shadow:var(--card-shadow)}
+  .row .lbl{font-size:11px;color:var(--dim);letter-spacing:.05em;text-transform:uppercase}
+  .row .val{font-size:22px;font-weight:600;margin-top:2px}
+  .row .val small{font-size:13px;font-weight:normal;color:var(--dim)}
+  .row.tight{padding:10px 14px}
+  .row .bar-wrap{display:flex;align-items:center;gap:8px;margin:4px 0}
+  .row .bar-bg{flex:1;height:8px;background:var(--line);border-radius:4px;overflow:hidden}
+  .row .bar-fill{height:100%;border-radius:4px;background:var(--accent);transition:width .3s}
+  .row .bar-lbl{font-size:13px;min-width:80px}
+  .row .bar-val{font-size:12px;color:var(--dim);min-width:50px;text-align:right}
+  .error{color:var(--danger);font-size:13px}
+  a{font-size:13px;text-decoration:none;display:block;text-align:center;margin-top:24px}
+  h2{font-size:15px;margin:18px 0 8px}
+  td{padding:3px 8px;font-size:13px}
+  td:nth-child(2){text-align:right;color:var(--dim)}
+  td:nth-child(3){text-align:right}
+</style>
+</head>
+<body><div id="wrap">
+  <h1>⏱ Статистика таймера</h1>
+  <div id="sub">сколько времени на задачах · распределение по проектам · мета-анализ</div>
+  <div class="toggle" id="period-toggle">
+    <button data-p="day">День</button>
+    <button data-p="week">Неделя</button>
+    <button data-p="month">Месяц</button>
+  </div>
+  <div id="stats"></div>
+  <div id="aw-row" style="display:none"></div>
+  <h2>По проектам</h2>
+  <div id="by-project"></div>
+  <h2>По контекстам</h2>
+  <div id="by-context"></div>
+  <a href="/">← в прихожую склада</a>
+</div>
+<script>
+"use strict";
+const $=s=>document.querySelector(s);
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
+function fmt(s){const h=Math.floor(s/3600),m=Math.floor((s%3600)/60);return h>0?`${h}ч ${m}м`:`${m}м`}
+let curPeriod='day';
+async function load(period){
+  curPeriod=period;
+  document.querySelectorAll('.toggle button').forEach(b=>b.classList.toggle('active',b.dataset.p===period));
+  const s=await(await fetch(`/timer/stats?period=${period}`)).json();
+  let html=`
+    <div class="row" style="display:flex;gap:16px;justify-content:space-around;text-align:center">
+      <div><div class="lbl">Всего</div><div class="val">${fmt(s.total_seconds)}</div></div>
+      <div><div class="lbl">Задач</div><div class="val">${s.task_count}</div></div>
+      <div><div class="lbl">Среднее</div><div class="val">${fmt(s.avg_seconds_per_task)}</div></div>
+    </div>`;
+  $('#stats').innerHTML=html;
+  // Active projects bar chart
+  const proj=Object.values(s.by_project).sort((a,b)=>b.seconds-a.seconds);
+  const maxSec=proj.length?Math.max(...proj.map(p=>p.seconds)):1;
+  let ph='';
+  for(const p of proj){
+    const pct=Math.round(p.seconds/maxSec*100);
+    ph+=`<div class="row tight"><div class="bar-wrap">
+      <span class="bar-lbl">${esc(p.title)}</span>
+      <div class="bar-bg"><div class="bar-fill" style="width:${pct}%"></div></div>
+      <span class="bar-val">${fmt(p.seconds)} (${p.task_count})</span>
+    </div></div>`;
+  }
+  $('#by-project').innerHTML=ph||'<div class="row" style="color:var(--dim)">Нет данных</div>';
+  // Contexts
+  const ctx=Object.values(s.by_context).sort((a,b)=>b.seconds-a.seconds);
+  const maxCtx=ctx.length?Math.max(...ctx.map(c=>c.seconds)):1;
+  let ch='';
+  for(const c of ctx){
+    const pct=Math.round(c.seconds/maxCtx*100);
+    ch+=`<div class="row tight"><div class="bar-wrap">
+      <span class="bar-lbl">${esc(Object.keys(s.by_context).find(k=>s.by_context[k]===c)||'—')}</span>
+      <div class="bar-bg"><div class="bar-fill" style="width:${pct}%"></div></div>
+      <span class="bar-val">${fmt(c.seconds)} (${c.task_count})</span>
+    </div></div>`;
+  }
+  $('#by-context').innerHTML=ch||'<div class="row" style="color:var(--dim)">Нет данных</div>';
+  // AW computer time
+  const aw=await(await fetch(`/timer/computer_time?period=${period}`)).json();
+  if(aw.total_seconds!==null&&aw.total_seconds!==undefined){
+    const taskPct=s.total_seconds>0?Math.round(s.total_seconds/aw.total_seconds*100):0;
+    $('#aw-row').style.display='block';
+    $('#aw-row').innerHTML=`
+      <h2>За компом vs на задачах</h2>
+      <div class="row" style="display:flex;gap:16px;justify-content:space-around;text-align:center">
+        <div><div class="lbl">За компом</div><div class="val">${fmt(aw.total_seconds)}</div></div>
+        <div><div class="lbl">Из них на задачах</div><div class="val">${fmt(s.total_seconds)} <small>${taskPct}%</small></div></div>
+      </div>`;
+  }else{
+    $('#aw-row').style.display='block';
+    $('#aw-row').innerHTML=`<h2>За компом</h2><div class="row error">ActivityWatch: ${esc(aw.error||'недоступен')}</div>`;
+  }
+}
+document.querySelectorAll('.toggle button').forEach(b=>b.addEventListener('click',()=>load(b.dataset.p)));
+load('day');
+</script>
+</body>
+</html>

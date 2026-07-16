@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <link rel="stylesheet" href="/style.css">
-<script src="/theme.js"></script>
+<script src="/theme.js"></script><script src="/storozh.js"></script><script src="/juice.js"></script>
 <title>🎯 Фокус</title>
 <style>
   html,body{margin:0;height:100%;display:flex;flex-direction:column;align-items:center;overflow:hidden}
@@ -41,14 +41,42 @@ function esc(s){const d=document.createElement('div');d.textContent=s;return d.i
 function beep(f,d){try{const a=beep.ac=beep.ac||new AudioContext(),o=a.createOscillator(),g=a.createGain();
   o.type='triangle';o.frequency.value=f;g.gain.value=.05;o.connect(g);g.connect(a.destination);
   o.start();g.gain.exponentialRampToValueAtTime(1e-4,a.currentTime+d);o.stop(a.currentTime+d)}catch(e){}}
-let staleDays=3;
+let staleDays=3, dryPallets=[];
+let timerSession=null, timerBoxId=null, timerInterval=null;
+function fmtElapsed(s){
+  const h=Math.floor(s/3600), m=Math.floor((s%3600)/60), se=s%60;
+  return String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')+':'+String(se).padStart(2,'0');
+}
+async function checkTimer(){
+  if(!items.length)return;
+  const d=await api('/timer/active');
+  if(d.active){timerSession=d.session;timerBoxId=d.session.box_id;
+    if(timerInterval)clearInterval(timerInterval);
+    timerInterval=setInterval(()=>{
+      const el=$('#timer-elapsed');
+      if(el&&timerSession&&timerBoxId===items[i]?.id){
+        const sec=Math.floor((Date.now()-new Date(timerSession.started_at+'Z').getTime())/1000);
+        el.textContent=fmtElapsed(sec);
+      }
+    },1000);
+  }else{timerSession=null;timerBoxId=null;
+    if(timerInterval){clearInterval(timerInterval);timerInterval=null;}
+  }
+}
 async function load(){
   const d=await api('/focus');
-  items=d.items; staleDays=d.stale_days;
+  items=d.items; staleDays=d.stale_days; dryPallets=d.dry_pallets||[];
   i=Math.min(i,Math.max(0,items.length-1)); render();
+  await checkTimer();
 }
 function render(){
-  if(!items.length){$('#stage').innerHTML='<div class="card muted"><img class="empty-ill" src="/assets/empty-focus.png" alt="">Фокус пуст. Наполни его на разборе инбокса. ✨</div>';
+  if(!items.length){
+    // тяга: фокус пуст → зовём доить проекты вместо тупика «наполни на разборе»
+    const milk=dryPallets.length
+      ?'<div style="margin-top:14px">'+dryPallets.map(p=>`<button class="b-primary" style="display:block;width:100%;margin:6px 0;white-space:normal" onclick="location.href='/pallets_page#p${p.id}'">🥛 Подоить проект: ${esc(p.title)}</button>`).join('')
+        +'<div class="meta" style="margin-top:8px">сними с проекта следующий конкретный шаг — и он появится тут</div></div>':'';
+    $('#stage').innerHTML='<div class="card muted"><img class="empty-ill" src="/assets/empty-focus.png" alt="">Фокус пуст.'
+      +(dryPallets.length?' Проекты ждут доения ↓':' Наполни его на разборе инбокса. ✨')+milk+'</div>';
     $('#pager').style.display='none';return}
   const b=items[i];
   const stale=b.idle_days>staleDays;
@@ -56,6 +84,8 @@ function render(){
   const dust=stale?` · <span style="color:var(--sand)">🕸 лежит ${b.idle_days} дн.</span>`:'';
   // ПДВ: награда видна ДО действия; серия — бонус за шаги одной паллеты за день
   const reward=b.reward+b.series+(b.series?` <span style="color:var(--vio)">(серия 🧱 +${b.series})</span>`:'');
+  // перекус-кредит: минуты ютуба за шаг (🎲 = изредка больше); творческий проект — без него
+  const ytRow=b.yt?`<div class="meta" style="margin-top:10px">🎬 этот шаг даст +${b.yt} мин перекуса (иногда 🎲 больше)</div>`:'';
   const sib=b.pallet_id&&items.some(o=>o.id!==b.id&&o.pallet_id===b.pallet_id);
   const hint=(sib&&!b.series)?'<div class="meta" style="margin-top:10px">💡 в фокусе ещё шаг этой паллеты: второй за день пойдёт серией, с бонусом</div>':'';
   const staleRow=stale?`<div style="margin-top:12px">
@@ -65,19 +95,54 @@ function render(){
     ?`<button class="b-sec" style="color:var(--gold)" title="снять звезду" onclick="setStar(${b.id},false)">⭐ на завтра</button>`
     :`<button class="b-ghost" title="звезда = главное на завтра (утром решений ноль)" onclick="setStar(${b.id},true)">☆ на завтра</button>`;
   $('#stage').innerHTML=`<div class="card in" id="c" ${b.starred?'style="border-color:var(--gold)"':''}>
-    <div class="meta">${b.starred?'⭐ ':''}#${b.id} · родилась ${b.born_at.slice(0,10)}${pal}${dust}</div>
+    <div class="meta">${b.starred?'⭐ ':''}#${b.id} · родилась ${b.born_at.slice(0,10)}${pal}${dust}${b.elapsed_seconds_total?` · ⏱ ${fmtElapsed(b.elapsed_seconds_total)}`:''}</div>
     <div class="task">${esc(b.raw_text)}</div>
     <button class="b-ok" onclick="done(${b.id})">✅ Сделал +${reward}</button>
     ${starBtn}
+    <span id="timer-row" style="display:inline-block;margin:6px 0">
+      <span id="timer-elapsed" style="font-size:14px;color:var(--vio);${timerBoxId===b.id?'':'display:none'}">${timerBoxId===b.id&&timerSession?fmtElapsed(Math.floor((Date.now()-new Date(timerSession.started_at+'Z').getTime())/1000)):''}</span>
+      <button class="${timerBoxId===b.id?'b-sec':'b-ghost'}" style="${timerBoxId===b.id?'border-color:var(--vio)':''}" id="timer-btn" onclick="toggleTimer(${b.id})">${timerBoxId===b.id?'⏹ Стоп':'▶ Таймер'}</button>
+    </span>
     <button class="b-ghost" title="жду человека/события - уйдёт в Ожидание, напомнит само"
       onclick="toWait(${b.id})">⏳ Жду</button>
     <button class="b-danger" title="уже неактуально" onclick="toTrash(${b.id})">🗑</button>
-    ${hint}${staleRow}
+    ${ytRow}${hint}${staleRow}
   </div>`;
   $('#pager').style.display=items.length>1?'flex':'none';
   $('#cnt').textContent=(i+1)+' / '+items.length;
 }
 function pg(d){i=(i+d+items.length)%items.length;render()}
+async function toggleTimer(id){
+  if(timerBoxId===id){
+    // stop
+    await api('/timer/stop',{box_id:id});
+    timerSession=null;timerBoxId=null;
+    if(timerInterval){clearInterval(timerInterval);timerInterval=null;}
+    window.juice&&juice('done');
+    beep(500,.1);
+    const cur=items[i]&&items[i].id;
+    await load();
+    i=Math.max(0,items.findIndex(o=>o.id===cur));render();
+  }else{
+    // start
+    try{
+      const r=await api('/timer/start',{box_id:id});
+      timerSession={started_at:r.started_at};timerBoxId=id;
+      if(timerInterval)clearInterval(timerInterval);
+      timerInterval=setInterval(()=>{
+        const el=$('#timer-elapsed');
+        if(el&&timerBoxId===items[i]?.id){
+          const sec=Math.floor((Date.now()-new Date(timerSession.started_at+'Z').getTime())/1000);
+          el.textContent=fmtElapsed(sec);
+        }
+      },1000);
+      beep(660,.12);
+      const cur=items[i]&&items[i].id;
+      await load();
+      i=Math.max(0,items.findIndex(o=>o.id===cur));render();
+    }catch(e){}
+  }
+}
 async function mv(id,to){
   const r=await fetch('/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,to})});
   if(r.status===423){$('#stage').insertAdjacentHTML('afterbegin',
@@ -86,18 +151,55 @@ async function mv(id,to){
   return r.json()
 }
 async function done(id){
+  // авто-стоп таймера если тикает на этой задаче
+  if(timerBoxId===id){
+    await api('/timer/stop',{box_id:id}).catch(()=>{});
+    timerSession=null;timerBoxId=null;
+    if(timerInterval){clearInterval(timerInterval);timerInterval=null;}
+  }
   $('#c').classList.add('fly');beep(700,.15);setTimeout(()=>beep(900,.2),100);
-  try{await mv(id,'done')}catch(e){return}
-  setTimeout(load,350);
+  let r;try{r=await mv(id,'done')}catch(e){return}
+  window.juice&&juice('done');
+  if(r&&r.yt_bonus){beep(1200,.25); // 🎲 вариативная награда: редкий сюрприз-бонус
+    $('#stage').insertAdjacentHTML('afterbegin',
+      `<div class="card" style="border-color:var(--gold);color:var(--gold);margin-bottom:12px">🎲 Повезло! +${r.yt} мин перекуса вместо обычных</div>`);}
+  // шарнир done→next: проект остался без заряженного шага → ловим горячий момент
+  if(r&&r.pallet_dry){setTimeout(()=>nextStepPrompt(r.pallet_dry),r.yt_bonus?1600:350);return}
+  setTimeout(load,r&&r.yt_bonus?1600:350);
+}
+function nextStepPrompt(pd){
+  $('#stage').innerHTML=`<div class="card in">
+    <div class="task" style="font-size:17px">✅ Шаг закрыт. Проект «${esc(pd.title)}» без следующего шага.</div>
+    <div class="meta" style="margin:8px 0">пока голова в контексте — задай следующий одной фразой (или пропусти):</div>
+    <input id="nx" placeholder="следующий шаг — маленький и конкретный" onkeydown="if(event.key==='Enter')submitNext(${pd.id})">
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <button class="b-ok" onclick="submitNext(${pd.id})">→ 🎯 Дальше</button>
+      <button class="b-ghost" onclick="load()">Пропустить →</button>
+    </div>
+  </div>`;
+  $('#pager').style.display='none';
+  const el=$('#nx'); if(el)el.focus();
+}
+async function submitNext(pid){
+  const v=$('#nx').value.trim();
+  if(!v){load();return}
+  // на шарнире шаг идёт СРАЗУ в фокус (сохраняем импульс + серию), не в очередь
+  let r;try{r=await api('/pallet/step',{pallet_id:pid,text:v})}catch(e){load();return}
+  try{await api('/move',{id:r.step_id,to:'focus'})}catch(e){}
+  beep(560,.12);window.juice&&juice('milk');load();
 }
 async function toWait(id){
+  if(timerBoxId===id){await api('/timer/stop',{box_id:id}).catch(()=>{});timerSession=null;timerBoxId=null;if(timerInterval){clearInterval(timerInterval);timerInterval=null;}}
   $('#c').classList.add('fly');beep(300,.12);
   try{await mv(id,'waiting')}catch(e){return} // grow-таймер 1-3-7-14 по умолчанию
+  window.juice&&juice('wait');
   setTimeout(load,350);
 }
 async function shelve(id){
+  if(timerBoxId===id){await api('/timer/stop',{box_id:id}).catch(()=>{});timerSession=null;timerBoxId=null;if(timerInterval){clearInterval(timerInterval);timerInterval=null;}}
   $('#c').classList.add('fly');beep(340,.1);
   try{await mv(id,'rack')}catch(e){return}
+  window.juice&&juice('shelve');
   setTimeout(load,350);
 }
 async function setStar(id,on){
@@ -112,6 +214,7 @@ async function setStar(id,on){
   i=Math.max(0,items.findIndex(o=>o.id===cur));render();
 }
 async function toTrash(id){
+  if(timerBoxId===id){await api('/timer/stop',{box_id:id}).catch(()=>{});timerSession=null;timerBoxId=null;if(timerInterval){clearInterval(timerInterval);timerInterval=null;}}
   $('#c').classList.add('fly');beep(180,.12);
   try{await mv(id,'trash')}catch(e){return}
   setTimeout(load,350);

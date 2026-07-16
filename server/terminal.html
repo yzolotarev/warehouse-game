@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <link rel="stylesheet" href="/style.css">
-<script src="/theme.js"></script>
+<script src="/theme.js"></script><script src="/storozh.js"></script><script src="/juice.js"></script>
 <title>📦 Терминал склада</title>
 <style>
   html,body{margin:0;min-height:100%;display:flex;flex-direction:column;align-items:center}
@@ -16,6 +16,8 @@
   #btns{display:flex;gap:10px;margin-top:18px}
   #btns button{flex:1}
   #btns button[style]{flex:none} /* тихие ✔/🗑 не растягиваются */
+  #btns.list{flex-direction:column;max-height:52vh;overflow-y:auto;gap:6px}
+  #btns.list button{flex:none;text-align:left}
   #question{font-size:16px;font-weight:600;margin-top:16px;color:var(--accent)}
   #ctxrow{display:none;margin-top:12px;gap:8px}
   #ctxrow input{flex:1}
@@ -60,6 +62,8 @@
       <div id="moreRow" style="display:none;gap:8px;margin-top:8px">
         <button class="b-ghost" style="flex:none;font-size:12.5px;padding:8px 12px" onclick="renameCur()">✏️ переименовать</button>
         <button class="b-ghost" style="flex:none;font-size:12.5px;padding:8px 12px" id="streetBtn" onclick="streetCur()"></button>
+        <button class="b-ghost" style="flex:none;font-size:12.5px;padding:8px 12px" title="жду человека/события — уйдёт в Ожидание, напомнит само" onclick="waitCur()">⏳ Ожидание</button>
+        <button class="b-ghost" style="flex:none;font-size:12.5px;padding:8px 12px" title="отправить в технический проект" onclick="techRoute()">📡 Проект</button>
       </div>
     </div>
   </div>
@@ -86,9 +90,9 @@ function enterStage(){
 }
 function loadBar(){
   if(!window.WH_setLoadBar)return;
-  if(!stageTotal){window.WH_setLoadBar(100,pass<PASSES.length?`этап ${pass+1}/5 пуст`:'инбокс разобран');return}
+  if(!stageTotal){window.WH_setLoadBar(100,pass<PASSES.length?`этап ${pass+1}/${PASSES.length} пуст`:'инбокс разобран');return}
   const p=Math.round(stageDone/stageTotal*100);
-  window.WH_setLoadBar(p,`этап ${pass+1}/5: ${stageDone} из ${stageTotal}`);
+  window.WH_setLoadBar(p,`этап ${pass+1}/${PASSES.length}: ${stageDone} из ${stageTotal}`);
 }
 const $=id=>document.getElementById(id);
 async function api(p,body){const r=await fetch(p,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});
@@ -130,15 +134,15 @@ function renderGlow(){
   $('boxmeta').textContent=`✨ загорелось в ожидании · осталось ${glowQ.length}`;
   $('boxtext').textContent=b.raw_text;
   $('question').textContent='Дождался?';
-  $('hint').textContent='готово → Сделано · жду дальше → напомнит позже · протухло → мусор';
+  $('hint').textContent='готово → Сделано · жду дальше → напомнит позже · в фокус → дождался, теперь делать · протухло → мусор';
   $('btns').innerHTML='';
-  [['✅ Готово','done'],['⏳ Жду дальше','wait'],['🗑 Протухло','delete']].forEach(([label,action])=>{
+  [['✅ Готово','done'],['⏳ Жду дальше','wait'],['🎯 В фокус','focus'],['🗑 Протухло','delete']].forEach(([label,action])=>{
     const btn=document.createElement('button');
     btn.textContent=label;
     btn.onclick=async()=>{if(flying)return;flying=true;glowQ.shift();
       try{await api('/wait_check',{id:b.id,action})}
       catch(e){glowQ.unshift(b)} // не приняло - товар вернётся на экран
-      beep(action==='done'?700:300,.12);flyNext()};
+      beep(action==='done'?700:300,.12);window.juice&&juice('glow');flyNext()};
     $('btns').appendChild(btn);
   });
 }
@@ -161,37 +165,40 @@ async function loadQueue(){
   $('mirror').style.display='block';
 }
 /* Конвейерные проходы: один вопрос применяется КО ВСЕЙ пачке, потом следующий.
-   Проход 1 «Это дело?»: дело→дальше / не дело→ведро notask
+   Проход 0 «Для техпроекта?»: да→📡 роутинг (done) / нет→проход 1
+   Проход 1 «Это дело?»: дело→дальше / не дело→проход 2
    Проход 2 «Один шаг или проект?»: один шаг→дальше / проект→паллета (в полку)
    Проход 3 «Мысль/мусор?» по ведру notask (сразу в полку)
-   Проход 4 «На этой неделе?»: да→фокус (в полку) / нет→дальше
-   Проход 5 «Ждёшь человека?»: да→ожидание / нет→стеллаж (контекст)
+   Проход 4 «На этой неделе?»: да→фокус (в полку) / не сейчас→стеллаж (🤖 контексты сам)
+   (проход «Ждёшь человека?» убран 13.07: в ожидание - только руками, «ещё → ⏳»)
    hint = куда уедет коробка при каждом ответе (юзабельность без раздумий) */
 const PASSES=[
+  {q:'Это для технического проекта?',hint:'техпроект = отдельный репозиторий с кодом (сайт, бот, api) · если да — задача/идея уедет в инбокс проекта',
+   a:[['🤖 Да, техпроект',x=>{techRoute();return false}],['🚫 Нет',x=>route(x,1)]]},
   {q:'Это дело?',hint:'дело = требует от тебя действия (проект — тоже дело) · мысль, ссылка, шум — не дело',
-   a:[['✅ Дело',x=>route(x,1)],['🚫 Не дело',x=>route(x,2)]]},
-  {q:'Это один конкретный шаг?',hint:'один шаг = сел и сделал · проект = несколько шагов или пока мутно → уедет в Проекты, там разложишь',
-   a:[['⚡ Один шаг',x=>route(x,3)],['🧱 Проект',x=>ship(x,'pallet_step')]]},
+   a:[['✅ Дело',x=>route(x,2)],['🚫 Не дело',x=>route(x,3)]]},
+  {q:'Это один конкретный шаг?',hint:'один шаг = сел и сделал · проект = нескольких шагов или пока мутно → уедет в Проекты, там разложишь',
+   a:[['⚡ Один шаг',x=>route(x,4)],['🧱 Проект',x=>ship(x,'pallet_step')]]},
   {q:'Оставить как мысль?',hint:'мысль → полка мыслей (потом в заметки) · мусор исчезает навсегда',
    a:[['💭 Мысль',x=>ship(x,'mind')],['🗑 Мусор',x=>ship(x,'trash')]]},
-  {q:'Займёшься на этой неделе?',hint:'да → Фокус (делаю сейчас) · не сейчас → ещё один вопрос',
-   a:[['✅ Да',x=>ship(x,'focus')],['🕰 Не сейчас',x=>route(x,4)]]},
-  {q:'Ждёшь другого человека?',hint:'да → Ожидание, напомнит само · нет → Отложенное: 🤖 сам разложит по контекстам',
-   a:[['⏳ Да, жду',x=>askWait(x)],['🚫 Нет',x=>ship(x,'rack')]]}
+  {q:'Займёшься на этой неделе?',hint:'да → Фокус (делаю сейчас) · не сейчас → Отложенное: 🤖 сам разложит по контекстам',
+   a:[['✅ Да',x=>ship(x,'focus')],['🕰 Не сейчас',x=>ship(x,'rack')]]}
 ];
 // авто-триаж: какой ответ на ТЕКУЩЕМ вопросе подсказывает фоновая LLM-классификация
 // (cur.ai_suggest = step|project|thought|trash, проставляется сервером асинхронно после захвата)
-const AI_HINT_LABEL={0:{step:'Дело',project:'Дело',thought:'Не дело',trash:'Не дело'},
-                      1:{step:'Один шаг',project:'Проект'},
-                      2:{thought:'Мысль',trash:'Мусор'}};
-const AI_HINT_INDEX={0:{step:0,project:0,thought:1,trash:1},
-                      1:{step:0,project:1},
-                      2:{thought:0,trash:1}};
+// проход 0 не имеет AI_HINT — он про техпроекты
+const AI_HINT_LABEL={1:{step:'Дело',project:'Дело',thought:'Не дело',trash:'Не дело'},
+                      2:{step:'Один шаг',project:'Проект'},
+                      3:{thought:'Мысль',trash:'Мусор'}};
+const AI_HINT_INDEX={1:{step:0,project:0,thought:1,trash:1},
+                      2:{step:0,project:1},
+                      3:{thought:0,trash:1}};
 let hist=[];
 function route(item,toPass){
   hist.push({type:'route',item,fromPass:pass,toPass});
   P[toPass].items.push(item);
   stageDone++; loadBar();
+  window.juice&&juice('triage');
   api('/triage_pass',{id:item.id,p:toPass}).catch(()=>{}); // персист - переживает reload
 }
 async function undo(){
@@ -232,6 +239,7 @@ function startPasses(items){
 }
 function nextItem(){
   flying=false;
+  $('btns').classList.remove('list');
   $('ctxrow').style.display='none';
   $('undorow').style.display=hist.length?'block':'none';
   while(pass<P.length && P[pass].items.length===0) pass++;
@@ -247,11 +255,11 @@ function nextItem(){
   $('triage').style.display='block';$('empty').style.display='none';
   $('more').style.display='block';resetMore();syncStreetBtn();
   const src={pc:'💻',phone:'📱',cli:'⌨️'}[cur.source]||'·';
-  $('boxmeta').textContent=`проход ${pass+1}/5 · #${cur.id} ${src} · в пачке ещё ${P[pass].items.length}`;
+  $('boxmeta').textContent=`проход ${pass+1}/${P.length} · #${cur.id} ${src} · в пачке ещё ${P[pass].items.length}`;
   $('boxtext').textContent=cur.raw_text;
   $('question').textContent=P[pass].q;
   let hint=P[pass].hint||'';
-  if(pass===3&&focusN>=5)hint+=` · ⚠ фокус уже полон (${focusN}/5) — честнее «не сейчас»`;
+  if(pass===4&&focusN>=5)hint+=` · ⚠ фокус уже полон (${focusN}/5) — честнее «не сейчас»`;
   if(cur.loop_count>=2)hint+=` · 🔁 уже ${cur.loop_count}× возвращал(а) в инбокс — реши сейчас, не откручивай снова`;
   const aiLabel=(AI_HINT_LABEL[pass]||{})[cur.ai_suggest];
   if(aiLabel)hint+=` · 🤖 похоже: ${aiLabel}`;
@@ -286,7 +294,7 @@ function flyNext(){
   $('triage').classList.add('fly');
   setTimeout(()=>{$('triage').classList.remove('fly');nextItem()},260);
 }
-// свёрнутые редкие действия (▾): переименовать / вручную в контекст улицы.
+// свёрнутые редкие действия (▾): переименовать / вручную в контекст улицы / в ожидание.
 // Ручной выбор улицы сильнее LLM (street_manual) - пересборка его не перекинет.
 function toggleMore(){
   const r=$('moreRow'),open=r.style.display!=='none';
@@ -298,6 +306,13 @@ function resetMore(){
 }
 function syncStreetBtn(){
   $('streetBtn').textContent=cur&&cur.street?'🚶 уличная ✓ · убрать':'🚶 На улицу';
+}
+function waitCur(){
+  // «⏳ Жду» с любого прохода: тот же выбор частоты напоминаний, что на 5-м проходе
+  if(!cur||flying)return;
+  logEv('triage_answer',{box:cur.id,text:cur.raw_text,pass:pass+1,q:'ещё',a:'⏳ Жду'});
+  resetMore();
+  askWait(cur);
 }
 async function renameCur(){
   if(!cur)return;
@@ -334,6 +349,7 @@ async function ship(item,shelf,ctx,extra){
   stageDone++; loadBar();
   beep(shelf==='trash'?180:560,.12);
   if(r.points>=10)beep(880,.3);
+  window.juice&&juice('ship');
   loadMirror();
 }
 function askWait(item){
@@ -359,6 +375,44 @@ function askWait(item){
     $('btns').appendChild(b);
   });
   return false; // товар не снят: ждём выбора режима напоминаний
+}
+function techRoute(){
+  if(!cur||flying)return;
+  resetMore();
+  $('question').textContent='📡 Загружаю список проектов…';
+  $('hint').textContent='';
+  $('btns').innerHTML='<button disabled>⏳</button>';
+  api('/tech_projects').then(resp=>{
+    const ps=resp.projects;
+    if(!ps||!ps.length){$('question').textContent='📡 Нет техпроектов в реестре';$('hint').textContent='';$('btns').innerHTML='<button onclick="nextItem()">← назад</button>';return}
+    renderTechProjectList(ps);
+  }).catch(e=>{$('question').textContent='⚠ Ошибка загрузки списка';$('hint').textContent=e.message;$('btns').innerHTML='<button onclick="nextItem()">← назад</button>'});
+}
+function renderTechProjectList(projects){
+  $('question').textContent='📡 Выбери проект:';
+  $('hint').textContent='задача/идея попадёт в инбокс проекта';
+  $('btns').innerHTML='';
+  $('btns').classList.add('list');
+  projects.forEach(p=>{
+    addBtn(`📁 ${p.name}`,()=>techRouteConfirm(p));
+  });
+  addBtn('← Отмена',()=>nextItem());
+}
+async function techRouteConfirm(proj){
+  if(flying)return;flying=true;
+  try{
+    await api('/tech_route_confirm',{id:cur.id,text:cur.raw_text,project_name:proj.name,project_path:proj.path});
+    logEv('tech_route',{box:cur.id,text:cur.raw_text,project:proj.name});
+    beep(620,.12);window.juice&&juice('ship');
+    P[pass].items.shift();flyNext();
+  }catch(e){
+    flying=false;
+    $('hint').textContent='⚠ не отправилось ('+e.message+')';
+  }
+}
+function addBtn(label,onclick){
+  const b=document.createElement('button');
+  b.textContent=label;b.onclick=onclick;$('btns').appendChild(b);
 }
 // контекст у Отложенного больше не спрашивается: коробки едут на стеллаж как есть,
 // сервер после затишья сам пересоберёт весь стеллаж в контексты (автоконтекстуализация)

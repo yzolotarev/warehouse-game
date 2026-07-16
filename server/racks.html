@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <link rel="stylesheet" href="/style.css">
-<script src="/theme.js"></script>
+<script src="/theme.js"></script><script src="/storozh.js"></script>
 <title>🗄 Стеллажи</title>
 <style>
   html,body{margin:0;height:100%;display:flex;flex-direction:column;align-items:center;overflow:hidden}
@@ -16,6 +16,12 @@
     padding:4px 12px;font-size:13px;color:var(--accent);margin-bottom:6px}
   button{margin:0 5px}
   .muted{color:var(--dim);text-align:center;padding:40px 0;font-size:15px}
+  #stage{flex:1 1 auto;overflow-y:auto;min-height:0}
+  #q{width:100%;box-sizing:border-box;margin-bottom:10px}
+  .row{display:flex;gap:10px;align-items:baseline;padding:10px 12px;border-radius:9px;cursor:pointer}
+  .row:hover{background:var(--accent-soft)}
+  .rctx{font-size:12px;color:var(--accent);white-space:nowrap}
+  .rage{font-size:12px;color:var(--dim);margin-left:auto;white-space:nowrap}
   .fly{animation:fly .4s ease forwards}
   @keyframes fly{to{transform:translateX(120%) rotate(5deg);opacity:0}}
   .flyl{animation:flyl .35s ease forwards}
@@ -30,7 +36,8 @@
 <body><div id="wrap">
   <h1>🗄 Отложенное <span style="color:var(--dim);font-weight:normal">= сделаю позже, не на этой неделе (стеллажи)</span></h1>
   <div id="sub">по одному товару: берёшь в работу, оставляешь лежать или выкидываешь
-    <span id="rcbtn" style="cursor:pointer;color:var(--accent);white-space:nowrap" onclick="recontext()" title="LLM пересоберёт весь стеллаж в контексты">· 🤖 пересобрать контексты</span></div>
+    <span id="rcbtn" style="cursor:pointer;color:var(--accent);white-space:nowrap" onclick="recontext()" title="LLM пересоберёт весь стеллаж в контексты">· 🤖 пересобрать контексты</span>
+    <span id="lsbtn" style="cursor:pointer;color:var(--accent);white-space:nowrap" onclick="toggleList()" title="все товары одним списком, с поиском">· 🔍 список</span></div>
   <div id="rcline" style="display:none;color:var(--dim);font-size:13px;margin-bottom:12px"></div>
   <div id="banner" onclick="location.href='/terminal'">⛔ Склад стоит: разбери инбокс →</div>
   <div id="stage"></div>
@@ -77,6 +84,8 @@ async function pollRc(active){
   if(active)load(); // прогон закончился - показать свежую раскладку
 }
 function render(){
+  $('#lsbtn').textContent=mode==='list'?'· 📦 по одному':'· 🔍 список';
+  if(mode==='list')return renderList();
   if(!items.length){$('#stage').innerHTML='<div class="card muted">Стеллажи пусты. Всё либо в деле, либо сделано. ✨</div>';return}
   const b=items[0];
   const age=Math.round((Date.now()-new Date(b.born_at))/864e5);
@@ -92,11 +101,40 @@ function render(){
       <div id="mRow" style="display:none;margin-top:8px">
         <button class="b-ghost" style="font-size:12.5px;padding:8px 12px" onclick="renameCur()">✏️ переименовать</button>
         <button class="b-ghost" style="font-size:12.5px;padding:8px 12px" onclick="streetCur()">${b.street?'🚶 уличная ✓ · убрать':'🚶 На улицу'}</button>
+        <button class="b-ghost" style="font-size:12.5px;padding:8px 12px" title="жду человека/события — уйдёт в Ожидание, напомнит само" onclick="act('waiting')">⏳ Ожидание</button>
       </div>
     </div>
   </div>`;
 }
-// свёрнутые редкие действия: переименовать / вручную в контекст улицы
+// режим списка: найти конкретный товар глазами или поиском, клик кладёт его
+// первым в карточную очередь - все действия (фокус/переименовать/🗑) уже там
+let mode='card';
+function toggleList(){mode=mode==='list'?'card':'list';render()}
+function renderList(){
+  if(!items.length){$('#stage').innerHTML='<div class="card muted">Стеллажи пусты. Всё либо в деле, либо сделано. ✨</div>';return}
+  $('#stage').innerHTML='<div class="in"><input id="q" placeholder="поиск по стеллажам…"><div id="rows"></div></div>';
+  const q=$('#q');
+  q.oninput=listRows;
+  q.onkeydown=e=>{if(e.key==='Escape')toggleList()};
+  listRows();q.focus();
+}
+function listRows(){
+  const q=$('#q').value.trim().toLowerCase();
+  const hit=items.filter(b=>!q||b.raw_text.toLowerCase().includes(q)||(b.context||'').toLowerCase().includes(q));
+  $('#rows').innerHTML=hit.length?hit.map(b=>{
+    const age=Math.round((Date.now()-new Date(b.born_at))/864e5);
+    return `<div class="row" onclick="pick(${b.id})" title="взять в руки">
+      <span class="rctx">${esc(b.context||'·')}</span>
+      <span>${esc(b.raw_text)}</span>
+      <span class="rage">${age} дн.</span></div>`;
+  }).join(''):'<div class="muted">ничего не нашлось</div>';
+}
+function pick(id){
+  const i=items.findIndex(b=>b.id===id);if(i<0)return;
+  items.unshift(items.splice(i,1)[0]);
+  mode='card';beep(500,.06);render();
+}
+// свёрнутые редкие действия: переименовать / вручную в контекст улицы / в ожидание
 // (ручной выбор сильнее LLM - пересборка стеллажа его уважает)
 function toggleMore(){
   const r=$('#mRow'),open=r.style.display!=='none';
@@ -128,6 +166,7 @@ async function act(to){
   setTimeout(render,280);
 }
 document.addEventListener('keydown',e=>{
+  if(mode!=='card'||e.target.tagName==='INPUT')return;
   if(e.key==='1')act('focus'); if(e.key==='2')skip(); if(e.key==='3')act('trash');
 });
 load();pollRc(false);

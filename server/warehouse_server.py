@@ -7,6 +7,7 @@ API: POST /inbox, GET /boxes, POST /move, GET /health
 import difflib
 import json
 import os
+import random
 import re
 import sqlite3
 import subprocess
@@ -19,7 +20,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import uvicorn
@@ -44,6 +45,20 @@ REVIEW_POINTS = 25    # за недельную пересборку
 REST_POINTS = 2       # за преднамеренный отдых (кофейня, не чаще раза в 30 мин)
 STALE_FOCUS_DAYS = 3    # фокус без движения → пыль
 STALE_PALLET_DAYS = 30  # паллета без движения → заморозка
+
+# ─── 🎬 Кредит перекусов (earned screen time) ─────────────────────────────────
+# Петля ПДВ без единого решения человека: карточка фокуса показывает награду
+# ДО действия, ✅ начисляет минуты, ActivityWatch сам списывает за просмотром.
+# Канон ресёрча (NLM «Earned screen time»): при нуле - трение/видимость, НЕ блок
+# (реактивность); изредка кубик-бонус (вариативность против выгорания новизны);
+# творческие паллеты вне экономики (overjustification: не награждать интересное).
+YT_PER_DONE = 15          # минут перекуса за сделанный шаг
+YT_BONUS = 25             # кубик: изредка вместо обычных
+YT_BONUS_CHANCE = 6       # 1 из N начислений - бонусное
+YT_CAP = 90               # потолок накоплений (копить бесконечно = экономика мертва)
+YT_NUDGE_COOLDOWN = 300   # сек между нуджами «кредит кончился»
+AW_URL = os.environ.get("WAREHOUSE_AW", "http://localhost:5600/api/0")
+YT_TITLE_RE = re.compile(r"youtube|twitch", re.IGNORECASE)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS boxes(
@@ -95,6 +110,20 @@ CREATE TABLE IF NOT EXISTS events(
   kind TEXT NOT NULL,
   payload TEXT
 );
+CREATE TABLE IF NOT EXISTS yt_ledger(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  delta REAL NOT NULL,
+  reason TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS timer_sessions(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  box_id INTEGER NOT NULL REFERENCES boxes(id),
+  started_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  stopped_at TEXT,
+  elapsed_seconds INTEGER,
+  note TEXT
+);
 """
 
 
@@ -106,6 +135,31 @@ def log_event(conn, kind, **payload):
 
 def award(conn, amount, reason):
     conn.execute("INSERT INTO points(amount, reason) VALUES(?,?)", (amount, reason))
+
+
+def yt_balance(conn):
+    return conn.execute(
+        "SELECT COALESCE(SUM(delta),0) s FROM yt_ledger").fetchone()["s"]
+
+
+def yt_earn(conn, box_id, pallet_id):
+    """Начислить перекус-кредит за сделанный шаг. Творческие паллеты - мимо кассы.
+
+    Возвращает (минуты, бонус?) - (0, False) если не положено или потолок."""
+    if pallet_id:
+        p = conn.execute("SELECT creative FROM pallets WHERE id=?",
+                         (pallet_id,)).fetchone()
+        if p and p["creative"]:
+            return 0, False
+    bonus = random.randrange(YT_BONUS_CHANCE) == 0
+    mins = YT_BONUS if bonus else YT_PER_DONE
+    add = min(mins, max(0, YT_CAP - yt_balance(conn)))
+    if add <= 0:
+        return 0, False
+    conn.execute("INSERT INTO yt_ledger(delta, reason) VALUES(?,?)",
+                 (add, f"шаг #{box_id}" + (" 🎲 бонус" if bonus else "")))
+    log_event(conn, "yt_earn", id=box_id, minutes=add, bonus=bonus)
+    return add, bonus
 
 
 def get_flag(conn, key, default=""):
@@ -151,9 +205,26 @@ def init_db():
             # человек руками выбрал контекст улицы - его решение сильнее LLM:
             # пересборка стеллажа не смеет перекинуть такую коробку в другой контекст
             conn.execute("ALTER TABLE boxes ADD COLUMN street_manual INTEGER NOT NULL DEFAULT 0")
+        if "elapsed_seconds_total" not in cols:
+            # агрегат таймер-сессий по задаче — сколько секунд на неё потрачено
+            conn.execute("ALTER TABLE boxes ADD COLUMN elapsed_seconds_total INTEGER NOT NULL DEFAULT 0")
         pcols = {r["name"] for r in conn.execute("PRAGMA table_info(pallets)")}
         if "note_path" not in pcols:
             conn.execute("ALTER TABLE pallets ADD COLUMN note_path TEXT")
+        if "creative" not in pcols:
+            # творческий проект = вне экономики перекусов (overjustification effect:
+            # внешняя награда за интересное убивает внутренний интерес)
+            conn.execute("ALTER TABLE pallets ADD COLUMN creative INTEGER NOT NULL DEFAULT 0")
+        if "purpose" not in pcols:
+            # Natural Planning Model (Аллен): недостающие фазы "зачем" и "по каким
+            # правилам" - необязательные, чтобы не перегружать оформление (13.07)
+            conn.execute("ALTER TABLE pallets ADD COLUMN purpose TEXT")
+        if "principles" not in pcols:
+            conn.execute("ALTER TABLE pallets ADD COLUMN principles TEXT")
+        if "breadcrumb" not in pcols:
+            # «на чём встал / почему» — одна опциональная строка для дешёвого возврата
+            # на плохую голову; НЕ журнал, не путать с note_append (Obsidian) (14.07)
+            conn.execute("ALTER TABLE pallets ADD COLUMN breadcrumb TEXT")
 
 
 app = FastAPI(title="warehouse")
@@ -178,6 +249,16 @@ def style_css():
 @app.get("/theme.js")
 def theme_js():
     return FileResponse(Path(__file__).parent / "theme.js", media_type="text/javascript")
+
+
+@app.get("/storozh.js")
+def storozh_js():
+    return FileResponse(Path(__file__).parent / "storozh.js", media_type="text/javascript")
+
+
+@app.get("/juice.js")
+def juice_js():
+    return FileResponse(Path(__file__).parent / "juice.js", media_type="text/javascript")
 
 
 class InboxItem(BaseModel):
@@ -580,8 +661,107 @@ def triage_pass(t: TriagePassUpdate):
     уходит лишь финальная отгрузка."""
     with db() as conn:
         conn.execute("UPDATE boxes SET triage_pass=? WHERE id=? AND shelf='inbox'",
-                     (max(0, min(4, t.p)), t.id))
+                     (max(0, min(5, t.p)), t.id))
     return {"ok": True}
+
+
+# ─── Роутинг в технические проекты (из инбокса юзера в dev-warehouse проекта) ──
+TECH_REGISTRY = Path("~/.config/dev-warehouse/projects.json").expanduser()
+
+
+def _load_tech_projects():
+    """-> [(name, path, [aliases]), ...]"""
+    try:
+        raw = json.loads(TECH_REGISTRY.read_text())
+        return [(p["name"], p["path"], [a.lower() for a in p.get("aliases", [])])
+                for p in raw.get("projects", [])]
+    except Exception:
+        return []
+
+
+@app.get("/tech_projects")
+def tech_projects():
+    """Полный список техпроектов для ручного выбора."""
+    return {"projects": [{"name": name, "path": path}
+                          for name, path, _ in _load_tech_projects()]}
+
+
+class TechRouteSuggest(BaseModel):
+    id: int
+    text: str
+
+
+@app.post("/tech_route_suggest")
+def tech_route_suggest(r: TechRouteSuggest):
+    """AI-матчинг текста коробки по реестру техпроектов. Возвращает топа кандидатов."""
+    projects = _load_tech_projects()
+    if not projects:
+        return {"candidates": []}
+    text_lower = r.text.lower()
+    # 1. точный матч по алиасам
+    scored = []
+    for name, path, aliases in projects:
+        score = 0
+        match_alias = ""
+        for a in aliases:
+            if a in text_lower:
+                alen = len(a.split())
+                score = max(score, 0.5 + 0.1 * alen)
+                match_alias = a
+        # 2. fuzzy поверх точного: похожие слова
+        words = set(text_lower.split())
+        for a in aliases:
+            aw = set(a.split())
+            common = words & aw
+            if common:
+                score = max(score, 0.3 + 0.15 * len(common))
+        if score:
+            scored.append((score, name, path, match_alias))
+    scored.sort(reverse=True)
+    # если есть лидер с отрывом >= 0.3 — единственный кандидат
+    candidates = []
+    for i, (s, name, path, ma) in enumerate(scored[:3]):
+        conf = "high" if i == 0 and (len(scored) == 1 or scored[0][0] - scored[1][0] >= 0.3) else "medium"
+        candidates.append({"name": name, "path": path,
+                           "matched_alias": ma or None, "confidence": conf})
+    if not candidates:
+        # ничего не нашли — предложим все проекты для ручного выбора
+        for name, path, _ in projects:
+            candidates.append({"name": name, "path": path,
+                               "matched_alias": None, "confidence": "none"})
+    return {"candidates": candidates[:5]}
+
+
+class TechRouteConfirm(BaseModel):
+    id: int
+    text: str
+    project_name: str
+    project_path: str
+
+
+@app.post("/tech_route_confirm")
+def tech_route_confirm(c: TechRouteConfirm):
+    """Подтвердить роутинг: dev-warehouse add + move в done."""
+    ppath = Path(c.project_path).expanduser()
+    db_path = ppath / ".dev" / "warehouse.db"
+    if not db_path.exists():
+        raise HTTPException(400, f"у проекта {c.project_name} нет dev-warehouse")
+    # забросить в инбокс техпроекта
+    r = subprocess.run(
+        ["dev-warehouse", "--db", str(db_path), "add", c.text, "--source", "warehouse-inbox"],
+        capture_output=True, text=True, timeout=30)
+    if r.returncode != 0:
+        raise HTTPException(500, f"dev-warehouse add failed: {r.stderr[:300]}")
+    # у себя — в done
+    with db() as conn:
+        conn.execute(
+            "UPDATE boxes SET shelf='done' WHERE id=? AND shelf='inbox'",
+            (c.id,))
+        conn.execute(
+            "INSERT INTO moves(box_id, from_shelf, to_shelf) VALUES(?, 'inbox', 'done')",
+            (c.id,))
+        log_event(conn, "tech_route", id=c.id, project=c.project_name, text=c.text[:200])
+    return {"ok": True, "project": c.project_name}
 
 
 @app.get("/boxes")
@@ -678,9 +858,11 @@ def move_box(m: Move):
             # откат решения: очко триажа возвращается в кассу
             pts -= TRIAGE_POINTS
             award(conn, -TRIAGE_POINTS, f"откат на приёмку #{m.id}")
+        yt_min, yt_bonus = 0, False
         if m.to == "done":
             pts += DONE_POINTS
             award(conn, DONE_POINTS, f"сделано #{m.id}")
+            yt_min, yt_bonus = yt_earn(conn, m.id, row["pallet_id"])
             if row["pallet_id"]:
                 prev = conn.execute(
                     "SELECT COUNT(*) c FROM moves mv JOIN boxes b ON b.id=mv.box_id "
@@ -692,12 +874,225 @@ def move_box(m: Move):
                     award(conn, SERIES_POINTS, f"серия паллеты #{row['pallet_id']}")
         log_event(conn, "move", id=m.id, frm=row["shelf"], to=m.to,
                   context=m.context, points=pts)
-    return {"ok": True, "points": pts}
+        # шарнир done→next: закрыл шаг проекта и очередь+фокус опустели → зовём
+        # задать следующий, пока голова ещё в контексте (ловим ровно тот зазор,
+        # где многоходовые задачи умирают)
+        pallet_dry = None
+        if m.to == "done" and row["pallet_id"]:
+            charged = conn.execute(
+                "SELECT COUNT(*) c FROM boxes WHERE pallet_id=? "
+                "AND shelf IN ('pallet_step','focus')", (row["pallet_id"],)).fetchone()["c"]
+            pr = conn.execute("SELECT title, frozen FROM pallets WHERE id=?",
+                              (row["pallet_id"],)).fetchone()
+            if not charged and pr and not pr["frozen"]:
+                pallet_dry = {"id": row["pallet_id"], "title": pr["title"]}
+    return {"ok": True, "points": pts, "yt": yt_min, "yt_bonus": yt_bonus,
+            "pallet_dry": pallet_dry}
 
 
 def _add_days(n):
     from datetime import timedelta
     return (date.today() + timedelta(days=n)).isoformat()
+
+
+# ─── ⏱ Timer API ──────────────────────────────────────────────────────────────
+
+
+class TimerStart(BaseModel):
+    box_id: int
+
+
+class TimerStop(BaseModel):
+    box_id: int
+    note: str | None = None
+
+
+@app.post("/timer/start")
+def timer_start(t: TimerStart):
+    """Запустить таймер на задаче. Если уже тикает — 409."""
+    with db() as conn:
+        row = conn.execute("SELECT id FROM boxes WHERE id=?", (t.box_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "no such box")
+        running = conn.execute(
+            "SELECT id FROM timer_sessions WHERE box_id=? AND stopped_at IS NULL",
+            (t.box_id,)).fetchone()
+        if running:
+            raise HTTPException(409, "timer already running for this box")
+        # проверить, нет ли другого активного таймера вообще (один таймер на весь склад)
+        any_running = conn.execute(
+            "SELECT id FROM timer_sessions WHERE stopped_at IS NULL LIMIT 1").fetchone()
+        if any_running:
+            raise HTTPException(409, "another timer is already running, stop it first")
+        cur = conn.execute(
+            "INSERT INTO timer_sessions(box_id) VALUES(?)", (t.box_id,))
+        sess_id = cur.lastrowid
+        row = conn.execute("SELECT id, started_at FROM timer_sessions WHERE id=?",
+                           (sess_id,)).fetchone()
+        log_event(conn, "timer_start", box_id=t.box_id, session_id=sess_id)
+    return {"ok": True, "session_id": row["id"], "started_at": row["started_at"]}
+
+
+@app.post("/timer/stop")
+def timer_stop(t: TimerStop):
+    """Остановить таймер на задаче. Вычисляет elapsed."""
+    with db() as conn:
+        sess = conn.execute(
+            "SELECT id, started_at FROM timer_sessions "
+            "WHERE box_id=? AND stopped_at IS NULL ORDER BY id DESC LIMIT 1",
+            (t.box_id,)).fetchone()
+        if not sess:
+            raise HTTPException(404, "no running timer for this box")
+        now = datetime.now()
+        started = datetime.fromisoformat(sess["started_at"])
+        elapsed = int((now - started).total_seconds())
+        conn.execute(
+            "UPDATE timer_sessions SET stopped_at=?, elapsed_seconds=?, note=COALESCE(?, note) "
+            "WHERE id=?",
+            (now.isoformat(timespec="seconds"), elapsed, t.note, sess["id"]))
+        # обновить агрегат на boxes
+        total = conn.execute(
+            "SELECT COALESCE(SUM(elapsed_seconds),0) s FROM timer_sessions "
+            "WHERE box_id=? AND elapsed_seconds IS NOT NULL",
+            (t.box_id,)).fetchone()["s"]
+        conn.execute("UPDATE boxes SET elapsed_seconds_total=? WHERE id=?",
+                     (total, t.box_id))
+        log_event(conn, "timer_stop", box_id=t.box_id, session_id=sess["id"],
+                  elapsed_seconds=elapsed)
+    return {"ok": True, "session_id": sess["id"], "elapsed_seconds": elapsed,
+            "total_seconds": total}
+
+
+@app.get("/timer/history")
+def timer_history(box_id: int):
+    """История таймер-сессий по задаче."""
+    with db() as conn:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM timer_sessions WHERE box_id=? ORDER BY started_at DESC",
+            (box_id,))]
+    return rows
+
+
+@app.get("/timer/active")
+def timer_active():
+    """Какая сессия сейчас тикает (для восстановления UI после reload)."""
+    with db() as conn:
+        sess = conn.execute(
+            "SELECT ts.*, b.raw_text FROM timer_sessions ts "
+            "JOIN boxes b ON b.id=ts.box_id "
+            "WHERE ts.stopped_at IS NULL LIMIT 1").fetchone()
+    if not sess:
+        return {"active": False}
+    return {"active": True, "session": dict(sess)}
+
+
+@app.get("/timer/stats")
+def timer_stats(period: str = "day"):
+    """Статистика таймера за период.
+
+    period: day | week | month
+    Возвращает total_seconds по проектам (паллетам), по контекстам,
+    общее количество задач с таймером, среднее время на задачу.
+    """
+    import calendar
+    today = date.today()
+    if period == "week":
+        start = today - timedelta(days=today.weekday())  # пн
+    elif period == "month":
+        start = today.replace(day=1)
+    else:
+        start = today
+    start_str = start.isoformat()
+    with db() as conn:
+        # все сессии за период
+        rows = conn.execute(
+            "SELECT ts.*, b.pallet_id, b.context FROM timer_sessions ts "
+            "JOIN boxes b ON b.id=ts.box_id "
+            "WHERE ts.stopped_at IS NOT NULL AND date(ts.started_at)>=?",
+            (start_str,)).fetchall()
+        total = sum(r["elapsed_seconds"] or 0 for r in rows)
+        task_ids = {r["box_id"] for r in rows}
+        task_count = len(task_ids)
+        avg = total // task_count if task_count else 0
+        # группировка по проектам
+        projects = {}
+        for r in rows:
+            pid = r["pallet_id"]
+            key = str(pid) if pid else "null"
+            if key not in projects:
+                if pid:
+                    title = conn.execute("SELECT title FROM pallets WHERE id=?",
+                                         (pid,)).fetchone()
+                    projects[key] = {"pallet_id": pid,
+                                     "title": title["title"] if title else "Без проекта",
+                                     "seconds": 0, "tasks": set()}
+                else:
+                    projects[key] = {"pallet_id": None, "title": "Без проекта",
+                                     "seconds": 0, "tasks": set()}
+            projects[key]["seconds"] += r["elapsed_seconds"] or 0
+            projects[key]["tasks"].add(r["box_id"])
+        for p in projects.values():
+            p["task_count"] = len(p["tasks"])
+            del p["tasks"]
+        # группировка по контекстам
+        contexts = {}
+        for r in rows:
+            ctx = r["context"] or "Без контекста"
+            if ctx not in contexts:
+                contexts[ctx] = {"seconds": 0, "tasks": set()}
+            contexts[ctx]["seconds"] += r["elapsed_seconds"] or 0
+            contexts[ctx]["tasks"].add(r["box_id"])
+        for c in contexts.values():
+            c["task_count"] = len(c["tasks"])
+            del c["tasks"]
+    return {
+        "period": period,
+        "start_date": start_str,
+        "total_seconds": total,
+        "task_count": task_count,
+        "avg_seconds_per_task": avg,
+        "by_project": dict(projects),
+        "by_context": dict(contexts),
+    }
+
+
+@app.get("/timer/computer_time")
+def timer_computer_time(period: str = "day"):
+    """Общее время за компьютером из ActivityWatch за период."""
+    from datetime import datetime, timedelta
+    today = date.today()
+    if period == "week":
+        start = today - timedelta(days=today.weekday())
+    elif period == "month":
+        start = today.replace(day=1)
+    else:
+        start = today
+    start_str = start.isoformat()
+    end_str = today.isoformat()
+    try:
+        win_b, afk_b = _aw_find_buckets()
+        if not (win_b and afk_b):
+            return {"error": "ActivityWatch buckets not found", "total_seconds": None}
+        # суммарное время AFK за период
+        afk_data = _aw_get(f"buckets/{afk_b}/events?start={start_str}T00:00:00&end={end_str}T23:59:59&limit=5000")
+        afk_sec = sum(
+            e["duration"] for e in afk_data
+            if isinstance(e.get("data"), dict) and e["data"].get("status") in ("afk", "unknown"))
+        # общее время окна
+        win_data = _aw_get(f"buckets/{win_b}/events?start={start_str}T00:00:00&end={end_str}T23:59:59&limit=5000")
+        win_sec = sum(e["duration"] for e in win_data)
+        awake_sec = max(0, int(win_sec - afk_sec))
+        return {"total_seconds": awake_sec, "period": period, "start_date": start_str}
+    except Exception as e:
+        return {"error": str(e), "total_seconds": None}
+
+
+@app.get("/timer_dashboard")
+def timer_dashboard():
+    return FileResponse(Path(__file__).parent / "timer_dashboard.html")
+
+
+# ─── 🔔 Glow (ожидание) ────────────────────────────────────────────────────────
 
 
 @app.get("/glow")
@@ -715,7 +1110,7 @@ def glow():
 
 class WaitCheck(BaseModel):
     id: int
-    action: str  # done | wait | delete
+    action: str  # done | wait | focus | delete
 
 
 @app.post("/wait_check")
@@ -733,9 +1128,9 @@ def wait_check(w: WaitCheck):
                          (json.dumps(t), w.id))
             log_event(conn, "wait_more", id=w.id, next=t["next"])
             return {"ok": True, "next": t["next"]}
-    target = {"done": "done", "delete": "trash"}.get(w.action)
+    target = {"done": "done", "delete": "trash", "focus": "focus"}.get(w.action)
     if not target:
-        raise HTTPException(400, "action: done|wait|delete")
+        raise HTTPException(400, "action: done|wait|focus|delete")
     return move_box(Move(id=w.id, to=target))
 
 
@@ -744,6 +1139,8 @@ class PalletNew(BaseModel):
     done_criteria: str = ""
     from_box: int | None = None   # мутный товар, из которого родилась
     first_step: str = ""          # одношаговый шаг → сразу в фокус
+    purpose: str = ""             # Natural Planning Model: "зачем" (необязательно)
+    principles: str = ""          # "по каким правилам" (необязательно)
 
 
 def _check_blocked(conn):
@@ -756,8 +1153,8 @@ def pallet_new(p: PalletNew):
     with db() as conn:
         _check_blocked(conn)
         cur = conn.execute(
-            "INSERT INTO pallets(title, done_criteria) VALUES(?,?)",
-            (p.title.strip(), p.done_criteria.strip()))
+            "INSERT INTO pallets(title, done_criteria, purpose, principles) VALUES(?,?,?,?)",
+            (p.title.strip(), p.done_criteria.strip(), p.purpose.strip(), p.principles.strip()))
         pid = cur.lastrowid
         # проект приехал указателем из Obsidian → сразу привязываем его заметку
         note = _obsidian_match(p.title) if "obsidian" in p.title.lower() else None
@@ -947,11 +1344,13 @@ class PalletStep(BaseModel):
 def pallet_step(s: PalletStep):
     with db() as conn:
         _check_blocked(conn)
+        # шаг рождается в ОЧЕРЕДИ проекта (полка pallet_step с pallet_id), не в
+        # фокусе: доение наполняет очередь, фокус тянет из неё по одному (stepFocus)
         cur = conn.execute(
             "INSERT INTO boxes(raw_text, source, shelf, pallet_id) "
-            "VALUES(?, 'pallet', 'focus', ?)", (s.text.strip(), s.pallet_id))
+            "VALUES(?, 'pallet', 'pallet_step', ?)", (s.text.strip(), s.pallet_id))
         conn.execute("INSERT INTO moves(box_id, from_shelf, to_shelf) "
-                     "VALUES(?, NULL, 'focus')", (cur.lastrowid,))
+                     "VALUES(?, NULL, 'pallet_step')", (cur.lastrowid,))
         log_event(conn, "pallet_step", pid=s.pallet_id, step_id=cur.lastrowid)
     return {"step_id": cur.lastrowid}
 
@@ -975,6 +1374,14 @@ def pallets_list():
             p["steps"] = [dict(r) for r in conn.execute(
                 "SELECT * FROM boxes WHERE pallet_id=? ORDER BY id", (p["id"],))]
             p["idle_days"] = (today - date.fromisoformat(_pallet_last_move(conn, p))).days
+            # авто-«что было»: последний сделанный шаг — для дешёвого возврата в проект
+            # на плохую голову (журнал руками не веду, всё уже лежит в moves)
+            ld = conn.execute(
+                "SELECT b.raw_text t, MAX(mv.at) at FROM moves mv JOIN boxes b ON b.id=mv.box_id "
+                "WHERE b.pallet_id=? AND mv.to_shelf='done'", (p["id"],)).fetchone()
+            p["last_done"] = ({"text": ld["t"],
+                               "days": (today - date.fromisoformat(ld["at"][:10])).days}
+                              if ld and ld["at"] else None)
             p["done_today"] = conn.execute(
                 "SELECT COUNT(*) c FROM moves mv JOIN boxes b ON b.id=mv.box_id "
                 "WHERE mv.to_shelf='done' AND date(mv.at)=date('now','localtime') "
@@ -1000,6 +1407,61 @@ def pallet_bump(b: PalletBump):
                      (b.id,))
         log_event(conn, "pallet_bump", pid=b.id)
     return {"ok": True}
+
+
+class PalletCreative(BaseModel):
+    id: int
+    creative: bool
+
+
+@app.post("/pallet/creative")
+def pallet_creative(c: PalletCreative):
+    """🎨 творческий проект: шаги вне экономики перекусов (интерес - сам себе награда)."""
+    with db() as conn:
+        conn.execute("UPDATE pallets SET creative=? WHERE id=?", (int(c.creative), c.id))
+        log_event(conn, "pallet_creative", pid=c.id, creative=c.creative)
+    return {"ok": True}
+
+
+class PalletPurpose(BaseModel):
+    id: int
+    purpose: str = ""
+    principles: str = ""
+
+
+@app.post("/pallet/purpose")
+def pallet_purpose(pp: PalletPurpose):
+    """Правка "зачем"/"по каким правилам" после оформления (необязательные поля)."""
+    with db() as conn:
+        conn.execute("UPDATE pallets SET purpose=?, principles=? WHERE id=?",
+                     (pp.purpose.strip(), pp.principles.strip(), pp.id))
+        log_event(conn, "pallet_purpose", pid=pp.id)
+    return {"ok": True}
+
+
+class PalletBreadcrumb(BaseModel):
+    id: int
+    text: str = ""
+
+
+@app.post("/pallet/breadcrumb")
+def pallet_breadcrumb(b: PalletBreadcrumb):
+    """🔖 «на чём встал» — тонкая крошка контекста в карточке (пусто = стереть).
+    Не Obsidian-заметка: для взгляда на плохую голову, а не для архива."""
+    with db() as conn:
+        conn.execute("UPDATE pallets SET breadcrumb=? WHERE id=?", (b.text.strip(), b.id))
+        log_event(conn, "pallet_breadcrumb", pid=b.id)
+    return {"ok": True}
+
+
+def _dry_pallets(conn):
+    """Проекты без заряженного шага (пусто и в очереди, и в фокусе) — их пора доить.
+    Замороженные молчат: заморозка = «пока не трогаем» (ею же глушат завершённый)."""
+    rows = conn.execute(
+        "SELECT p.id, p.title FROM pallets p WHERE p.frozen=0 "
+        "AND NOT EXISTS (SELECT 1 FROM boxes b WHERE b.pallet_id=p.id "
+        "AND b.shelf IN ('pallet_step','focus')) ORDER BY p.created_at DESC").fetchall()
+    return [{"id": r["id"], "title": r["title"]} for r in rows]
 
 
 class PalletFreeze(BaseModel):
@@ -1081,10 +1543,13 @@ def focus_list():
             d["reward"] = DONE_POINTS
             d["series"] = 0
             d["pallet_title"] = None
+            d["yt"] = YT_PER_DONE  # предвкушение: перекус виден ДО действия
             if r["pallet_id"]:
-                p = conn.execute("SELECT title FROM pallets WHERE id=?",
+                p = conn.execute("SELECT title, creative FROM pallets WHERE id=?",
                                  (r["pallet_id"],)).fetchone()
                 d["pallet_title"] = p["title"] if p else None
+                if p and p["creative"]:
+                    d["yt"] = 0  # творческий проект: интерес - сам себе награда
                 done_today = conn.execute(
                     "SELECT COUNT(*) c FROM moves mv JOIN boxes b ON b.id=mv.box_id "
                     "WHERE mv.to_shelf='done' AND date(mv.at)=date('now','localtime') "
@@ -1092,7 +1557,8 @@ def focus_list():
                 if done_today:
                     d["series"] = SERIES_POINTS
             out.append(d)
-    return {"items": out, "stale_days": STALE_FOCUS_DAYS}
+        dry = _dry_pallets(conn)
+    return {"items": out, "stale_days": STALE_FOCUS_DAYS, "dry_pallets": dry}
 
 
 @app.get("/pallets_page")
@@ -1131,9 +1597,11 @@ def state():
         stars = [{"id": r["id"], "text": r["raw_text"]} for r in conn.execute(
             "SELECT id, raw_text FROM boxes WHERE shelf='focus' AND starred=1 ORDER BY id")]
         rest_until = get_flag(conn, "rest_until")
+        dry = _dry_pallets(conn)
     return {"counts": counts, "blocked": bool(blocked), "blocked_since": blocked or None,
             "points_total": total, "call_at": CALL_AT, "truck_at": TRUCK_AT,
-            "review_due": review_due, "stars": stars, "rest_until": rest_until or None}
+            "review_due": review_due, "stars": stars, "rest_until": rest_until or None,
+            "dry_pallets": dry}
 
 
 def _pick_now(st, glow_items):
@@ -1162,9 +1630,276 @@ def _pick_now(st, glow_items):
     if c.get("focus"):
         return {"act": f"🎯 Работать фокус ({c['focus']})",
                 "why": "одна задача на экране — её и делай", "url": "/focus_page"}
+    dry = st.get("dry_pallets") or []
+    if dry:
+        # тяга: фокус пуст → не «всё разобрано», а вытяни следующий шаг из проекта
+        d0 = dry[0]
+        return {"act": f"🥛 Подоить проект: {d0['title'][:50]}",
+                "why": "фокус пуст — сними с проекта следующий конкретный шаг, "
+                       f"и он поедет в работу{'' if len(dry)==1 else f' (ждут доения: {len(dry)})'}",
+                "url": f"/pallets_page#p{d0['id']}"}
     return {"act": "☕ Всё разобрано — отдых тоже работа",
             "why": "можно закинуть что-то во входящие или просто выдохнуть",
             "url": "/focus_page", "calm": True}
+
+
+def _brief_text():
+    """Текстовый дайджест склада — рабочая память для ИИ-мостиков (сторож-чат, журнал).
+    Только сегодняшнее состояние, никакой истории: раздутый контекст = глупее ответ."""
+    now = datetime.now()
+    wd = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"][now.weekday()]
+    today = date.today()
+    L = []
+    with db() as conn:
+        counts = dict(conn.execute(
+            "SELECT shelf, COUNT(*) FROM boxes GROUP BY shelf").fetchall())
+        total = conn.execute("SELECT COALESCE(SUM(amount),0) s FROM points").fetchone()["s"]
+        pts_today = conn.execute(
+            "SELECT COALESCE(SUM(amount),0) s FROM points "
+            "WHERE date(at)=date('now','localtime')").fetchone()["s"]
+        L.append(f"Склад, {wd} {now:%d.%m %H:%M}. Зов {CALL_AT}, фура {TRUCK_AT}. "
+                 f"⭐ {total} (сегодня +{pts_today}). 🎬 {yt_balance(conn):.0f} мин перекуса.")
+        status = []
+        if get_flag(conn, "blocked"):
+            status.append("⛔ СТОПОР: склад стоит, пока входящие не разобраны")
+        if get_flag(conn, "rest_until"):
+            status.append("☕ хозяин сейчас отдыхает (кофейня)")
+        if _review_due(conn):
+            status.append("🧰 пора делать недельную пересборку (+25 ⭐)")
+        if status:
+            L.append(" · ".join(status))
+
+        rows = conn.execute(
+            "SELECT * FROM boxes WHERE shelf='focus' ORDER BY starred DESC, id").fetchall()
+        L.append(f"\n🎯 Фокус (текущие дела) {len(rows)}/5:" if rows
+                 else "\n🎯 Фокус (текущие дела): пусто.")
+        for r in rows:
+            last = conn.execute("SELECT MAX(at) m FROM moves WHERE box_id=?",
+                                (r["id"],)).fetchone()["m"]
+            idle = (today - date.fromisoformat(last[:10])).days if last else 0
+            tags = []
+            if r["starred"]:
+                tags.append("⭐ звезда — главное на сегодня/завтра")
+            if r["pallet_id"]:
+                p = conn.execute("SELECT title FROM pallets WHERE id=?",
+                                 (r["pallet_id"],)).fetchone()
+                if p:
+                    tags.append(f"шаг проекта «{p['title']}»")
+            if idle >= STALE_FOCUS_DAYS:
+                tags.append(f"🕸 без движения {idle} дн")
+            L.append(f"  - {r['raw_text']}" + (f" [{', '.join(tags)}]" if tags else ""))
+
+        n_inbox = counts.get("inbox", 0)
+        if n_inbox:
+            L.append(f"\n📥 Входящие (инбокс) {n_inbox}, свежие первыми:")
+            L += [f"  - {r['raw_text']}" for r in conn.execute(
+                "SELECT raw_text FROM boxes WHERE shelf='inbox' ORDER BY id DESC LIMIT 10")]
+            if n_inbox > 10:
+                L.append(f"  … и ещё {n_inbox - 10}")
+        else:
+            L.append("\n📥 Входящие (инбокс): пусто.")
+
+        lit = [r for r in conn.execute("SELECT * FROM boxes WHERE shelf='waiting'")
+               if (json.loads(r["glow_timer"] or "{}").get("next") or "9999") <= today.isoformat()]
+        if lit:
+            L.append("\n✨ Загорелись (ожидание, пора проверить): "
+                     + " · ".join(f"«{r['raw_text']}»" for r in lit))
+
+        pallets = [dict(r) for r in conn.execute(
+            "SELECT * FROM pallets WHERE frozen=0 ORDER BY created_at DESC")]
+        frozen_n = conn.execute("SELECT COUNT(*) c FROM pallets WHERE frozen=1").fetchone()["c"]
+        unformed_n = conn.execute(
+            "SELECT COUNT(*) c FROM boxes WHERE shelf='pallet_step' AND pallet_id IS NULL"
+        ).fetchone()["c"]
+        if pallets or frozen_n or unformed_n:
+            L.append(f"\n🧱 Проекты (паллеты): живых {len(pallets)}"
+                     + (f", ❄ заморожено {frozen_n}" if frozen_n else "")
+                     + (f", неоформленных {unformed_n}" if unformed_n else "") + ":")
+            for p in pallets:
+                idle = (today - date.fromisoformat(_pallet_last_move(conn, p))).days
+                step = conn.execute(
+                    "SELECT raw_text, shelf FROM boxes WHERE pallet_id=? "
+                    "AND shelf IN ('focus','pallet_step') "
+                    "ORDER BY CASE shelf WHEN 'focus' THEN 0 ELSE 1 END, id LIMIT 1",
+                    (p["id"],)).fetchone()
+                if step:
+                    where = "в фокусе" if step["shelf"] == "focus" else "заряжен"
+                    tail = f"след. шаг {where}: «{step['raw_text']}»"
+                else:
+                    tail = "🥛 шаг НЕ назначен — подои проект"
+                idle_s = f", без движения {idle} дн" if idle >= 3 else ""
+                L.append(f"  - «{p['title']}» — {tail}{idle_s}")
+
+        n_wait = counts.get("waiting", 0)
+        if n_wait:
+            nxt = sorted(filter(None, (json.loads(r["glow_timer"] or "{}").get("next")
+                          for r in conn.execute("SELECT glow_timer FROM boxes WHERE shelf='waiting'"))))
+            L.append(f"\n⏳ Ожидание (ждёшь ответа): {n_wait}"
+                     + (f", ближайшая проверка {nxt[0]}" if nxt else ""))
+        n_rack = counts.get("rack", 0)
+        if n_rack:
+            ctx = conn.execute(
+                "SELECT COALESCE(context,'без контекста') c, COUNT(*) n FROM boxes "
+                "WHERE shelf='rack' GROUP BY context ORDER BY n DESC").fetchall()
+            L.append(f"🗄 Стеллажи (отложенное): {n_rack} — "
+                     + " · ".join(f"{r['c']} {r['n']}" for r in ctx))
+        if counts.get("mind"):
+            L.append(f"💭 Мысли (ждут переноса в заметки): {counts['mind']}")
+        done = conn.execute("SELECT raw_text FROM boxes WHERE shelf='done'").fetchall()
+        if done:
+            L.append(f"\n✅ Сделано сегодня {len(done)}: "
+                     + " · ".join(f"«{r['raw_text']}»" for r in done))
+    return "\n".join(L)
+
+
+@app.get("/brief")
+def brief():
+    return PlainTextResponse(_brief_text())
+
+
+# ── Сторож-чат: мозг живёт здесь, входы - TG-воркер и веб-виджет (theme.js).
+#    LLM = рассказчик, не решатель: read-only, коробки не двигает.
+LLM_CFG_PATH = Path.home() / ".config/warehouse/llm.json"
+CHAT_HIST_PATH = Path.home() / ".local/share/warehouse/chat_history.json"
+CHAT_KEEP = 24          # реплик в памяти (12 пар), сброс в новый день
+
+STORO_PROMPT = """Ты — сторож склада продуктивности. Склад = таск-система хозяина: \
+задачи-«коробки» лежат на полках (фокус, входящие, стеллажи, проекты-паллеты, ожидание).
+Ты собеседник для рефлексии: с тобой можно просто поговорить о жизни. Состояние склада \
+тебе дано ниже — вплетай его, когда уместно, но не пихай в каждую реплику.
+Твои законы:
+1. Ты read-only: двигать коробки не умеешь. Если в разговоре всплыло дело или мысль, \
+которую жалко потерять — предложи хозяину записать её во входящие (в Telegram: обычное \
+сообщение боту; на компьютере: Super+I).
+2. Никогда не упрекаешь. Пыль и простой — факт, не вина. «Сил нет» — уважительная причина.
+3. Отвечай коротко: 2-5 предложений, это чат. Без канцелярита, без списков без нужды.
+4. Складские термины поясняй обычным языком: «паллета (проект)», «стеллаж (отложенное)».
+Сегодняшнее состояние склада:
+"""
+
+
+def _chat_hist_load():
+    try:
+        h = json.loads(CHAT_HIST_PATH.read_text())
+        if h.get("date") == date.today().isoformat():
+            return h["msgs"]
+    except Exception:
+        pass
+    return []
+
+
+def _chat_hist_save(msgs):
+    CHAT_HIST_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CHAT_HIST_PATH.write_text(json.dumps(
+        {"date": date.today().isoformat(), "msgs": msgs[-CHAT_KEEP:]},
+        ensure_ascii=False))
+
+
+def _llm_zen(cfg, messages):
+    req = urllib.request.Request(
+        cfg["base_url"].rstrip("/") + "/chat/completions",
+        data=json.dumps({"model": cfg["model"],
+                         "max_tokens": cfg.get("max_tokens", 4000),
+                         "messages": messages}).encode(),
+        headers={"Content-Type": "application/json",
+                 "Authorization": f"Bearer {cfg.get('key', '')}",
+                 "User-Agent": "curl/8.5.0"})  # Cloudflare Zen: 403 на Python-urllib
+    with urllib.request.urlopen(req, timeout=90) as r:
+        resp = json.load(r)
+    return (resp["choices"][0]["message"]["content"] or "").strip()
+
+
+def _llm_gmn(messages):
+    """Фолбэк: gmn stateless, историю разворачиваем в один промпт."""
+    tag = {"system": "", "user": "Хозяин: ", "assistant": "Сторож: "}
+    prompt = "\n".join(tag[m["role"]] + m["content"] for m in messages) + "\nСторож:"
+    out = subprocess.run(["gmn", "ask", prompt],
+                         capture_output=True, text=True, timeout=120)
+    return out.stdout.strip() if out.returncode == 0 else ""
+
+
+CHAT_NOTE_STOP = {"сделать", "проект", "проекты", "проекта", "время", "нужно",
+                  "чтобы", "может", "давай", "такое", "просто", "сейчас"}
+
+
+def _chat_project_notes(q_texts):
+    """Заметки паллет, чьи названия упомянуты в разговоре. Урок первого диалога
+    12.07: без этого сторож врёт вслепую («в системе ни слова» про то, что лежит
+    в заметке). Матч: пересечение 5-буквенных основ слов (сцены/сцена → «сцен»).
+    q_texts в порядке приоритета: текущий вопрос первым, затем история — если
+    слотов (2) не хватает, побеждает то, о чём спрашивают СЕЙЧАС."""
+    def stems(t):
+        return {w[:5] for w in _norm(t).split()
+                if len(w) >= 5 and w not in CHAT_NOTE_STOP}
+    with db() as conn:
+        pallets = [dict(r) for r in conn.execute(
+            "SELECT title, note_path FROM pallets WHERE note_path IS NOT NULL")]
+    for p in pallets:
+        p["stems"] = stems(p["title"])
+    parts, titles = [], []
+    for t in q_texts:
+        qs = stems(t)
+        for p in pallets:
+            if len(titles) >= 2:   # больше двух заметок за ход - раздутый контекст
+                break
+            if p["title"] in titles or not (p["stems"] & qs):
+                continue
+            np = Path(p["note_path"])
+            nf = _note_file(p["note_path"])
+            chunk = nf.read_text(errors="replace")[:3500] if nf.is_file() else ""
+            if np.is_dir():
+                files = ", ".join(f.name for f in sorted(np.iterdir())
+                                  if not f.name.startswith("."))
+                chunk += f"\n(файлы папки проекта: {files})"
+            if chunk.strip():
+                parts.append(f"\n--- Заметка проекта «{p['title']}» ---\n{chunk}")
+                titles.append(p["title"])
+    if not parts:
+        return "", []
+    head = ("\n\nЗаметки упомянутых проектов — ЧИТАЙ ВНИМАТЕЛЬНО: это свежая "
+            "истина из Obsidian, она главнее того, что ты говорил в диалоге "
+            "раньше (тогда ты заметок не видел).")
+    return head + "".join(parts), titles
+
+
+class ChatMsg(BaseModel):
+    text: str
+
+
+@app.post("/chat")
+def chat(m: ChatMsg):
+    q = m.text.strip()
+    if not q:
+        raise HTTPException(400, "empty text")
+    hist = _chat_hist_load()
+    recent_user = [h["content"] for h in hist[-4:] if h["role"] == "user"]
+    notes, note_titles = _chat_project_notes([q] + recent_user[::-1])
+    messages = ([{"role": "system", "content": STORO_PROMPT + _brief_text() + notes}]
+                + hist + [{"role": "user", "content": q}])
+    answer = ""
+    try:
+        cfg = json.loads(LLM_CFG_PATH.read_text())
+        answer = _llm_zen(cfg, messages)
+    except Exception as e:
+        print(f"[chat] primary: {e}", flush=True)
+    if not answer:
+        try:
+            answer = _llm_gmn(messages)
+        except Exception as e:
+            print(f"[chat] gmn: {e}", flush=True)
+    if not answer:
+        return {"answer": None}   # оба мозга лежат: клиент покажет «сторож спит»
+    _chat_hist_save(hist + [{"role": "user", "content": q},
+                            {"role": "assistant", "content": answer}])
+    with db() as conn:
+        log_event(conn, "chat_q", text=q[:500], notes=note_titles)
+        log_event(conn, "chat_a", text=answer[:500])
+    return {"answer": answer}
+
+
+@app.get("/chat_history")
+def chat_history():
+    return {"msgs": _chat_hist_load()}
 
 
 @app.get("/peek")
@@ -1333,6 +2068,31 @@ def events_list(limit: int = 200, kind: str | None = None):
     return [dict(r) for r in rows]
 
 
+@app.get("/yt")
+def yt_state():
+    """🎬 кассовый аппарат перекусов: баланс + сегодняшний оборот."""
+    today = date.today().isoformat()
+    with db() as conn:
+        bal = yt_balance(conn)
+        earned = conn.execute(
+            "SELECT COALESCE(SUM(delta),0) s FROM yt_ledger "
+            "WHERE delta>0 AND date(at)=?", (today,)).fetchone()["s"]
+        spent = conn.execute(
+            "SELECT COALESCE(SUM(-delta),0) s FROM yt_ledger "
+            "WHERE delta<0 AND date(at)=?", (today,)).fetchone()["s"]
+    return {"balance": round(bal, 1), "per_done": YT_PER_DONE, "cap": YT_CAP,
+            "today_earned": round(earned, 1), "today_spent": round(spent, 1),
+            "watching": _yt_watching}
+
+
+@app.post("/heartbeat")
+def heartbeat():
+    with _heartbeat_lock:
+        global _last_heartbeat
+        _last_heartbeat = time.time()
+    return {"ok": True}
+
+
 @app.get("/health")
 def health():
     with db() as conn:
@@ -1341,7 +2101,12 @@ def health():
     return {"ok": True, "db": str(DB_PATH), "counts": counts}
 
 
+_HUSHED_NOTIFY = {"⛔ Склад встал", "📦 Склад зовёт"}
+
+
 def notify(title, body, urgent=False):
+    if title in _HUSHED_NOTIFY and _browser_active():
+        return
     cmd = ["notify-send", title, body]
     if urgent:
         cmd[1:1] = ["-u", "critical"]
@@ -1351,6 +2116,89 @@ def notify(title, body, urgent=False):
                    "DBUS_SESSION_BUS_ADDRESS",
                    f"unix:path=/run/user/{os.getuid()}/bus"))
     subprocess.run(cmd, env=env, timeout=5, check=False)
+
+
+_yt_watching = False  # для /yt: смотрит ли прямо сейчас (обновляет watcher)
+
+# Heartbeat: когда браузер открыт на любой странице склада (кроме capture),
+# storozh.js шлёт POST /heartbeat раз в минуту. Используем чтобы не слать
+# notify-send, когда пользователь уже в приложении.
+_last_heartbeat = 0.0
+_heartbeat_lock = threading.Lock()
+
+def _browser_active(timeout_s=300):
+    """Браузер склада открыт (heartbeat < timeout_s назад)?"""
+    with _heartbeat_lock:
+        if not _last_heartbeat:
+            return False
+        return time.time() - _last_heartbeat < timeout_s
+
+
+def _aw_get(path):
+    with urllib.request.urlopen(f"{AW_URL}/{path}", timeout=5) as r:
+        return json.load(r)
+
+
+def _aw_find_buckets():
+    """ID бакетов окна и AFK - имена включают hostname, ищем по типу."""
+    win = afk = None
+    for bid, b in _aw_get("buckets/").items():
+        if b.get("type") == "currentwindow":
+            win = bid
+        elif b.get("type") == "afkstatus":
+            afk = bid
+    return win, afk
+
+
+def yt_watcher():
+    """Списание перекус-кредита по факту: ActivityWatch видит YouTube в активном
+    окне (и человек не AFK) → минус минута. При нуле - нудж, НЕ блок (канон:
+    трение вместо стены, реактивность от жёстких блоков хоронит систему).
+    ActivityWatch недоступен → экономика просто замирает, склад живёт дальше."""
+    tick = 60
+    win_b = afk_b = None
+    last_nudge = 0.0
+    global _yt_watching
+    while True:
+        time.sleep(tick)
+        try:
+            if not (win_b and afk_b):
+                win_b, afk_b = _aw_find_buckets()
+                if not (win_b and afk_b):
+                    continue
+            wev = _aw_get(f"buckets/{win_b}/events?limit=1")
+            aev = _aw_get(f"buckets/{afk_b}/events?limit=1")
+            if not (wev and aev):
+                _yt_watching = False
+                continue
+            # свежесть: heartbeat должен покрывать «сейчас» (иначе AW спит/стоит)
+            ts = datetime.fromisoformat(wev[0]["timestamp"].replace("Z", "+00:00"))
+            age = (datetime.now(ts.tzinfo) - ts).total_seconds() - wev[0]["duration"]
+            active = (age < 3 * tick
+                      and aev[0]["data"].get("status") == "not-afk"
+                      and YT_TITLE_RE.search(wev[0]["data"].get("title", "")))
+            _yt_watching = bool(active)
+            if not active:
+                continue
+            with db() as conn:
+                bal = yt_balance(conn)
+                if bal > 0:
+                    spend = min(tick / 60, bal)
+                    conn.execute("INSERT INTO yt_ledger(delta, reason) VALUES(?,?)",
+                                 (-spend, "просмотр"))
+                elif time.time() - last_nudge >= YT_NUDGE_COOLDOWN:
+                    last_nudge = time.time()
+                    focus_txt = conn.execute(
+                        "SELECT raw_text FROM boxes WHERE shelf='focus' "
+                        "ORDER BY starred DESC, id LIMIT 1").fetchone()
+                    hint = (f"один шаг вернёт (+{YT_PER_DONE}м): "
+                            + focus_txt["raw_text"][:60]) if focus_txt \
+                        else f"любой шаг из фокуса вернёт +{YT_PER_DONE}м"
+                    log_event(conn, "yt_nudge")
+                    notify("🎬 Перекус-кредит кончился", hint)
+        except Exception:
+            win_b = afk_b = None  # AW перезапустился/недоступен - переоткроем бакеты
+            _yt_watching = False
 
 
 def scheduler():
@@ -1464,4 +2312,5 @@ def get_flag_standalone(key):
 if __name__ == "__main__":
     init_db()
     threading.Thread(target=scheduler, daemon=True).start()
+    threading.Thread(target=yt_watcher, daemon=True).start()
     uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")
