@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <link rel="stylesheet" href="/style.css">
-<script src="/theme.js"></script><script src="/storozh.js"></script>
+<script src="/theme.js"></script><script src="/i18n.js"></script><script src="/storozh.js"></script>
 <title>🗄 Стеллажи</title>
 <style>
   html,body{margin:0;height:100%;display:flex;flex-direction:column;align-items:center;overflow:hidden}
@@ -209,7 +209,7 @@ function toggleMore(){
 }
 async function renameCur(){
   const b=items[0];if(!b)return;
-  const t=prompt('Новое название:',b.raw_text);
+  const t=prompt((window.WH_T||String)('Новое название:'),b.raw_text);
   if(!t||!t.trim()||t.trim()===b.raw_text)return;
   try{await api('/rename',{id:b.id,text:t.trim()});b.raw_text=t.trim();beep(500,.08);render()}catch(e){}
 }

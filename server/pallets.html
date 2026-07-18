@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <link rel="stylesheet" href="/style.css">
-<script src="/theme.js"></script><script src="/storozh.js"></script><script src="/juice.js"></script>
+<script src="/theme.js"></script><script src="/i18n.js"></script><script src="/storozh.js"></script><script src="/juice.js"></script>
 <title>🧱 Паллетная зона</title>
 <style>
   html,body{margin:0;height:100%;display:flex;flex-direction:column;align-items:center;overflow:hidden}
@@ -55,7 +55,7 @@ function loadBar(nDone,nSteps,title){
 }
 async function api(p,body){
   const r=await fetch(p,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});
-  if(r.status===423){alert('⛔ Склад стоит: сначала разбери инбокс (/terminal)');throw new Error('blocked')}
+  if(r.status===423){alert((window.WH_T||String)('⛔ Склад стоит: сначала разбери инбокс (/terminal)'));throw new Error('blocked')}
   return r.json()
 }
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
@@ -234,7 +234,7 @@ async function setCreative(id,cr){
   beep(cr?820:340,.12); load();
 }
 async function delPallet(id){
-  if(!confirm('Удалить проект? Несделанные шаги уедут в мусор.'))return;
+  if(!confirm((window.WH_T||String)('Удалить проект? Несделанные шаги уедут в мусор.')))return;
   const r=await api('/pallet/delete',{id});
   beep(180,.15); pi=0; load();
 }
@@ -331,7 +331,7 @@ async function stepFocus(id){
 }
 function editCrumb(pid){
   const p=curPallet();
-  const v=prompt('🔖 На чём встал / почему (пусто — стереть):', (p&&p.breadcrumb)||'');
+  const v=prompt((window.WH_T||String)('🔖 На чём встал / почему (пусто — стереть):'), (p&&p.breadcrumb)||'');
   if(v===null)return;
   api('/pallet/breadcrumb',{id:pid,text:v.trim()}).then(load);
 }

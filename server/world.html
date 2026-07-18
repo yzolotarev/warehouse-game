@@ -80,9 +80,10 @@
 <div class="plaque" id="tip"><span class="nm"></span> <span class="ct"></span><br><span class="sb"></span></div>
 <div class="plaque" id="toast"></div>
 <div class="plaque" id="foot">зов <span id="callT"></span> · фура <span id="truckT"></span> · ЛКМ тащить · колесо зум · R повернуть · I разбор</div>
-<script src="/storozh.js"></script>
+<script src="/storozh.js"></script><script src="/i18n.js"></script>
 <script>
 "use strict";
+const T=window.WH_T||(x=>x);
 // меню (constrained front door — одна рекомендация вместо стены задач) - стартовое по умолчанию;
 // мир остаётся доступен явно через /#world или тумблер в футере хаба.
 if(localStorage.whStart!=='world'&&location.hash!=='#world'){location.replace('/hub');throw new Error('redirect')}
@@ -324,11 +325,11 @@ function label(z){
   const cx=z.x+z.w/2,cy=z.y+z.h+.1,n=z.n();
   ctx.font='bold 11px "JetBrains Mono",monospace';ctx.textAlign='center';
   ctx.fillStyle=env.labelShadow;
-  ctx.fillText(z.name+(n?' '+n:''),ix(cx,cy)+1,iy(cx,cy)+13);
+  ctx.fillText(T(z.name)+(n?' '+n:''),ix(cx,cy)+1,iy(cx,cy)+13);
   ctx.fillStyle=hoverZone===z?env.labelHover:env.label;
-  ctx.fillText(z.name+(n?' '+n:''),ix(cx,cy),iy(cx,cy)+12);
+  ctx.fillText(T(z.name)+(n?' '+n:''),ix(cx,cy),iy(cx,cy)+12);
   ctx.font='9px "JetBrains Mono",monospace';ctx.fillStyle=hoverZone===z?env.subHover:env.sub;
-  ctx.fillText(z.sub,ix(cx,cy),iy(cx,cy)+24);}
+  ctx.fillText(T(z.sub),ix(cx,cy),iy(cx,cy)+24);}
 
 function buildObjects(){
   const o=[];const put=(gx,gy,fn,bias)=>o.push({d:iy(gx,gy)+(bias||0),fn});
@@ -580,9 +581,9 @@ cv.addEventListener('mousemove',e=>{
   if(k){const z=ZONES[k],n=z.n();
     tip.style.display='block';
     tip.style.left=Math.min(e.clientX+14,W-180)+'px';tip.style.top=(e.clientY+14)+'px';
-    tip.querySelector('.nm').textContent=z.name;
+    tip.querySelector('.nm').textContent=T(z.name);
     tip.querySelector('.ct').textContent=n?('· '+n):'';
-    tip.querySelector('.sb').textContent=z.sub+(z.url?'':' · без панели');}
+    tip.querySelector('.sb').textContent=T(z.sub)+(z.url?'':T(' · без панели'));}
   else tip.style.display='none';});
 cv.addEventListener('mouseleave',()=>{tip.style.display='none';hoverZone=null});
 cv.addEventListener('wheel',e=>{e.preventDefault();

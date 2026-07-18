@@ -266,6 +266,11 @@ def juice_js():
     return FileResponse(Path(__file__).parent / "juice.js", media_type="text/javascript")
 
 
+@app.get("/i18n.js")
+def i18n_js():
+    return FileResponse(Path(__file__).parent / "i18n.js", media_type="text/javascript")
+
+
 class InboxItem(BaseModel):
     text: str
     source: str = "pc"
