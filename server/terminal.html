@@ -69,7 +69,9 @@
   </div>
   <div class="card" id="empty" style="display:none;text-align:center"><img class="empty-ill" src="/assets/empty-inbox.png" alt="">✨ Инбокс пуст. Склад дышит ровно.
     <div style="margin-top:12px;font-size:14px;color:var(--gold);cursor:pointer" onclick="location.href='/focus_page'">
-      ⭐ Теперь отметь звезду на завтра → фокус</div></div>
+      ⭐ Теперь отметь звезду на завтра → фокус</div>
+    <div id="rackbait" style="display:none;margin-top:10px;font-size:14px;color:var(--accent);cursor:pointer"
+      onclick="location.href='/racks_page'"></div></div>
   <div id="undorow" style="display:none;text-align:center;margin-top:2px">
     <button class="b-ghost" style="flex:none;font-size:13px;padding:8px 14px" onclick="undo()">↶ вернуть последнюю (Backspace)</button>
   </div>
@@ -104,6 +106,14 @@ function logEv(kind,payload){try{navigator.sendBeacon('/event',
 function beep(f,d){try{const a=beep.ac=beep.ac||new AudioContext(),o=a.createOscillator(),g=a.createGain();
   o.type='triangle';o.frequency.value=f;g.gain.value=.05;o.connect(g);g.connect(a.destination);
   o.start();g.gain.exponentialRampToValueAtTime(1e-4,a.currentTime+d);o.stop(a.currentTime+d)}catch(e){}}
+// приманка ревизии: инбокс разобран, руки чешутся - самое время глянуть отложку
+async function loadRackBait(){
+  let st; try{st=await api('/rack_review_status')}catch(e){return}
+  const el=$('rackbait');
+  if(!st.reward_ready){el.style.display='none';return}
+  el.style.display='block';
+  el.textContent=`🧹 Стеллаж пылится: ${st.count} коробок, старейшей ${st.oldest_days} дн. → ревизия даст +${st.reward}⭐`;
+}
 async function loadMirror(){
   const m=await api('/mirror');
   $('ptsbar').textContent='· '+m.points_total+' очков за сегодня';
@@ -179,7 +189,7 @@ const PASSES=[
    a:[['✅ Дело',x=>route(x,2)],['🚫 Не дело',x=>route(x,3)]]},
   {q:'Это один конкретный шаг?',hint:'один шаг = сел и сделал · проект = нескольких шагов или пока мутно → уедет в Проекты, там разложишь',
    a:[['⚡ Один шаг',x=>route(x,4)],['🧱 Проект',x=>ship(x,'pallet_step')]]},
-  {q:'Оставить как мысль?',hint:'мысль → полка мыслей (потом в заметки) · мусор исчезает навсегда',
+  {q:'Оставить как мысль?',hint:'мысль → сама станет заметкой в Obsidian · мусор исчезает навсегда',
    a:[['💭 Мысль',x=>ship(x,'mind')],['🗑 Мусор',x=>ship(x,'trash')]]},
   {q:'Займёшься на этой неделе?',hint:'да → Фокус (делаю сейчас) · не сейчас → Отложенное: 🤖 сам разложит по контекстам',
    a:[['✅ Да',x=>ship(x,'focus')],['🕰 Не сейчас',x=>ship(x,'rack')]]}
@@ -250,7 +260,7 @@ function nextItem(){
     if(glowOnly){ // пришли только за ожиданием - назад к зеркалу, инбокс мог быть непуст
       glowOnly=false;history.replaceState(null,'',location.pathname);
       $('triage').style.display='none';loadQueue();return}
-    $('triage').style.display='none';$('empty').style.display='block';loadMirror();return}
+    $('triage').style.display='none';$('empty').style.display='block';loadMirror();loadRackBait();return}
   cur=P[pass].items[0];
   $('triage').style.display='block';$('empty').style.display='none';
   $('more').style.display='block';resetMore();syncStreetBtn();

@@ -9,6 +9,7 @@ import json
 import os
 import random
 import re
+import shutil
 import sqlite3
 import subprocess
 import threading
@@ -35,6 +36,9 @@ PORT = int(os.environ.get("WAREHOUSE_PORT", "8091"))
 # папка проектов в Obsidian: паллета может быть привязана к md-файлу/папке (контекст проекта)
 OBSIDIAN_PROJECTS = Path(os.environ.get(
     "WAREHOUSE_OBSIDIAN", Path.home() / "Obsidian/9ListsHybrid/2nd brain/1. Проекты"))
+# полка «Мысли» дублируется заметками сюда: мысль с разбора сразу становится заметкой
+OBSIDIAN_MIND = Path(os.environ.get(
+    "WAREHOUSE_OBSIDIAN_MIND", Path.home() / "Obsidian/9ListsHybrid/2nd brain"))
 
 SHELVES = {"inbox", "focus", "rack", "pallet_step", "waiting", "done", "trash", "mind", "archived"}
 TRIAGE_POINTS = 1     # за разобранную коробку
@@ -42,6 +46,7 @@ RITUAL_POINTS = 10    # за инбокс, разобранный до нуля
 DONE_POINTS = 3       # за сделанную задачу
 SERIES_POINTS = 2     # за каждый следующий шаг той же паллеты за день (батчинг)
 REVIEW_POINTS = 25    # за недельную пересборку
+RACK_REVIEW_POINTS = 8  # за полную ревизию стеллажа (не чаще раза в день)
 REST_POINTS = 2       # за преднамеренный отдых (кофейня, не чаще раза в 30 мин)
 STALE_FOCUS_DAYS = 3    # фокус без движения → пыль
 STALE_PALLET_DAYS = 30  # паллета без движения → заморозка
@@ -667,6 +672,8 @@ def triage_pass(t: TriagePassUpdate):
 
 # ─── Роутинг в технические проекты (из инбокса юзера в dev-warehouse проекта) ──
 TECH_REGISTRY = Path("~/.config/dev-warehouse/projects.json").expanduser()
+# systemd-сервис живёт без пользовательского PATH — бинарь ищем сами
+DEV_WAREHOUSE_BIN = shutil.which("dev-warehouse") or str(Path("~/bin/dev-warehouse").expanduser())
 
 
 def _load_tech_projects():
@@ -748,7 +755,7 @@ def tech_route_confirm(c: TechRouteConfirm):
         raise HTTPException(400, f"у проекта {c.project_name} нет dev-warehouse")
     # забросить в инбокс техпроекта
     r = subprocess.run(
-        ["dev-warehouse", "--db", str(db_path), "add", c.text, "--source", "warehouse-inbox"],
+        [DEV_WAREHOUSE_BIN, "--db", str(db_path), "add", c.text, "--source", "warehouse-inbox"],
         capture_output=True, text=True, timeout=30)
     if r.returncode != 0:
         raise HTTPException(500, f"dev-warehouse add failed: {r.stderr[:300]}")
@@ -798,12 +805,34 @@ def inbox_dwell():
     return {"oldest_minutes": round(max(ages)), "count": len(rows)}
 
 
+def _export_mind(box_id: int, text: str) -> str | None:
+    """Мысль с разбора → отдельная md-заметка в Obsidian. Ошибка ФС не должна
+    ронять сам move: мысль в любом случае остаётся на полке mind."""
+    try:
+        OBSIDIAN_MIND.mkdir(parents=True, exist_ok=True)
+        first = text.strip().splitlines()[0] if text.strip() else ""
+        # только заведомо безопасные символы: буквы/цифры/пробел и мягкая пунктуация
+        # (запретные для ФС и Obsidian, управляющие, эмодзи - всё выпадает)
+        safe = "".join(ch if ch.isalnum() or ch in " -_,.!’'()+№" else " " for ch in first)
+        safe = " ".join(safe.split()).strip(" .")[:60].strip(" .")
+        p = OBSIDIAN_MIND / f"{safe or 'мысль-' + str(box_id)}.md"
+        n = 1
+        while p.exists():
+            n += 1
+            p = OBSIDIAN_MIND / f"{safe or 'мысль-' + str(box_id)} ({n}).md"
+        p.write_text(f"{text.strip()}\n\n> 💭 со склада, коробка #{box_id}, "
+                     f"{date.today().isoformat()}\n")
+        return str(p)
+    except OSError:
+        return None
+
+
 @app.post("/move")
 def move_box(m: Move):
     if m.to not in SHELVES:
         raise HTTPException(400, f"unknown shelf: {m.to}")
     with db() as conn:
-        row = conn.execute("SELECT shelf, pallet_id, street FROM boxes WHERE id=?", (m.id,)).fetchone()
+        row = conn.execute("SELECT shelf, pallet_id, street, raw_text FROM boxes WHERE id=?", (m.id,)).fetchone()
         if not row:
             raise HTTPException(404, "no such box")
         # Физический стопор: пока инбокс не разобран, двигаются только коробки
@@ -872,6 +901,10 @@ def move_box(m: Move):
                 if prev:
                     pts += SERIES_POINTS
                     award(conn, SERIES_POINTS, f"серия паллеты #{row['pallet_id']}")
+        if m.to == "mind" and row["shelf"] != "mind":
+            note = _export_mind(m.id, row["raw_text"])
+            if note:
+                log_event(conn, "mind_export", id=m.id, note=note)
         log_event(conn, "move", id=m.id, frm=row["shelf"], to=m.to,
                   context=m.context, points=pts)
         # шарнир done→next: закрыл шаг проекта и очередь+фокус опустели → зовём
@@ -1744,7 +1777,7 @@ def _brief_text():
             L.append(f"🗄 Стеллажи (отложенное): {n_rack} — "
                      + " · ".join(f"{r['c']} {r['n']}" for r in ctx))
         if counts.get("mind"):
-            L.append(f"💭 Мысли (ждут переноса в заметки): {counts['mind']}")
+            L.append(f"💭 Мысли (непрочитанные): {counts['mind']}")
         done = conn.execute("SELECT raw_text FROM boxes WHERE shelf='done'").fetchall()
         if done:
             L.append(f"\n✅ Сделано сегодня {len(done)}: "
@@ -1950,6 +1983,41 @@ def review_finish():
         set_flag(conn, "last_week_review", today)
         log_event(conn, "review_finish", points=REVIEW_POINTS)
     return {"ok": True, "points": REVIEW_POINTS}
+
+
+@app.get("/rack_review_status")
+def rack_review_status():
+    """Приманка для ревизии стеллажа: сколько лежит, давно ли смотрели, готова ли награда."""
+    with db() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) c, "
+            "CAST(MAX(julianday('now') - julianday(born_at)) AS INT) oldest "
+            "FROM boxes WHERE shelf='rack'").fetchone()
+        last = get_flag(conn, "last_rack_review")
+    today = date.today().isoformat()
+    return {"count": row["c"], "oldest_days": row["oldest"] or 0,
+            "last": last or None, "reward_ready": last != today and row["c"] > 0,
+            "reward": RACK_REVIEW_POINTS}
+
+
+class RackReviewFinish(BaseModel):
+    taken: int = 0    # ушло в фокус
+    trashed: int = 0  # «пофиг»
+    kept: int = 0     # осталось лежать
+
+
+@app.post("/rack_review_finish")
+def rack_review_finish(m: RackReviewFinish):
+    with db() as conn:
+        today = date.today().isoformat()
+        pts = 0
+        if get_flag(conn, "last_rack_review") != today:
+            pts = RACK_REVIEW_POINTS
+            award(conn, pts, "ревизия стеллажа")
+            set_flag(conn, "last_rack_review", today)
+        log_event(conn, "rack_review_finish",
+                  taken=m.taken, trashed=m.trashed, kept=m.kept, points=pts)
+    return {"ok": True, "points": pts}
 
 
 @app.get("/terminal")

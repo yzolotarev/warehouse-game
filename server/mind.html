@@ -26,8 +26,8 @@
 </style>
 </head>
 <body><div id="wrap">
-  <h1>💭 Мысли <span style="color:var(--dim);font-weight:normal">= ждут переноса в заметки</span></h1>
-  <div id="sub">прочитай — и либо перенеси в Obsidian руками, либо выкини. Автоматический перенос (вики-гейт) будет позже.</div>
+  <h1>💭 Мысли <span style="color:var(--dim);font-weight:normal">= уже в Obsidian</span></h1>
+  <div id="sub">каждая мысль с разбора автоматически стала заметкой в 2nd brain. Здесь — просто перечитай и убери с полки.</div>
   <div id="stage"></div>
   <div id="pager" style="display:none">
     <button class="b-ghost" onclick="pg(-1)">‹</button><span id="cnt"></span><button class="b-ghost" onclick="pg(1)">›</button>
@@ -54,9 +54,9 @@ function render(){
   $('#stage').innerHTML=`<div class="card in" id="c">
     <div class="meta">#${b.id} · записана ${b.born_at.slice(0,10)}</div>
     <div class="task">${esc(b.raw_text)}</div>
-    <button class="b-sec" onclick="taken(${b.id})">✅ Перенёс в заметки</button>
+    <button class="b-sec" onclick="taken(${b.id})">✅ Ок → в архив</button>
     <button class="b-danger" onclick="toTrash(${b.id})">🗑 Уже не нужна</button>
-    <div class="meta" style="margin-top:12px">«перенёс» = ты сам создал заметку в Obsidian — здесь мысль уедет в архив</div>
+    <div class="meta" style="margin-top:12px">заметка уже создана в Obsidian — кнопки убирают мысль только с этой полки</div>
   </div>`;
   $('#pager').style.display=items.length>1?'flex':'none';
   $('#cnt').textContent=(i+1)+' / '+items.length;

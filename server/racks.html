@@ -39,6 +39,8 @@
     <span id="rcbtn" style="cursor:pointer;color:var(--accent);white-space:nowrap" onclick="recontext()" title="LLM пересоберёт весь стеллаж в контексты">· 🤖 пересобрать контексты</span>
     <span id="lsbtn" style="cursor:pointer;color:var(--accent);white-space:nowrap" onclick="toggleList()" title="все товары одним списком, с поиском">· 🔍 список</span></div>
   <div id="rcline" style="display:none;color:var(--dim);font-size:13px;margin-bottom:12px"></div>
+  <div id="revbtn" style="display:none;background:var(--accent-soft);border:1px solid var(--accent);color:var(--accent);
+    padding:10px 14px;border-radius:9px;margin-bottom:14px;font-size:14px;cursor:pointer;text-align:center"></div>
   <div id="banner" onclick="location.href='/terminal'">⛔ Склад стоит: разбери инбокс →</div>
   <div id="stage"></div>
   <a href="/">← в прихожую склада</a>
@@ -83,8 +85,72 @@ async function pollRc(active){
     line.style.display='block';line.textContent='🤖 не вышло: '+st.last.error}
   if(active)load(); // прогон закончился - показать свежую раскладку
 }
+// ── ревизия: конвейер по всему стеллажу, как разбор инбокса ──
+// снапшот очереди (старейшие первыми), каждой коробке один вопрос:
+// в фокус / пофиг (мусор) / оставить. За полный проход +⭐ (раз в день).
+let rev=null; // {q:[], total, taken, trashed, kept}
+async function loadRevStatus(){
+  let st; try{st=await api('/rack_review_status')}catch(e){return}
+  const b=$('#revbtn');
+  if(mode!=='card'||!st.count){b.style.display='none';return}
+  b.style.display='block';
+  b.textContent=st.reward_ready
+    ?`🧹 Ревизия стеллажа: ${st.count} коробок, старейшей ${st.oldest_days} дн. → +${st.reward}⭐`
+    :`🧹 Ревизия сегодня уже была - но можно ещё раз`;
+  b.onclick=startRev;
+}
+async function startRev(){
+  try{focusN=((await api('/state')).counts||{}).focus||0}catch(e){focusN=0}
+  rev={q:items.slice().sort((a,b)=>a.born_at.localeCompare(b.born_at)),
+       total:items.length,taken:0,trashed:0,kept:0};
+  mode='rev';$('#revbtn').style.display='none';beep(500,.08);render();
+}
+let focusN=0;
+function renderRev(){
+  if(!rev.q.length)return finishRev();
+  const done=rev.total-rev.q.length;
+  window.WH_setLoadBar&&window.WH_setLoadBar(Math.round(done/rev.total*100),`ревизия: ${done} из ${rev.total}`);
+  const b=rev.q[0];
+  const age=Math.round((Date.now()-new Date(b.born_at))/864e5);
+  const warn=focusN>=5?`<div style="font-size:12.5px;color:var(--danger);margin-bottom:8px">⚠ фокус уже полон (${focusN}/5) - честнее «оставить» или «пофиг»</div>`:'';
+  $('#stage').innerHTML=`<div class="card in" id="c">
+    <div class="ctx">${esc(b.context||'·')}</div>
+    <div class="meta">ревизия · ${done+1} из ${rev.total} · #${b.id} · лежит ${age} дн.</div>
+    <div class="task">${esc(b.raw_text)}</div>${warn}
+    <button class="b-primary" onclick="revAct('focus')">🎯 В фокус</button>
+    <button onclick="revKeep()">Оставить ›</button>
+    <button class="b-danger" onclick="revAct('trash')">🗑 Пофиг</button>
+  </div>`;
+}
+async function revAct(to){
+  const b=rev.q[0];
+  $('#c').classList.add('fly');beep(to==='trash'?180:560,.12);
+  try{await api('/move',{id:b.id,to})}catch(e){return}
+  rev[to==='trash'?'trashed':'taken']++;
+  if(to==='focus')focusN++;
+  items=items.filter(x=>x.id!==b.id);
+  rev.q.shift();setTimeout(render,280);
+}
+function revKeep(){
+  $('#c').classList.add('flyl');beep(300,.06);
+  rev.kept++;rev.q.shift();setTimeout(render,260);
+}
+async function finishRev(){
+  let pts=0;
+  try{pts=(await api('/rack_review_finish',{taken:rev.taken,trashed:rev.trashed,kept:rev.kept})).points||0}catch(e){}
+  window.WH_setLoadBar&&window.WH_setLoadBar(100,'ревизия готова');
+  beep(660,.1);setTimeout(()=>beep(880,.14),120);
+  $('#stage').innerHTML=`<div class="card in" style="padding:40px 0">
+    <div style="font-size:19px">🧹 Ревизия готова${pts?` · +${pts}⭐`:''}</div>
+    <div class="meta" style="margin-top:10px">взял в фокус: ${rev.taken} · выкинул: ${rev.trashed} · лежат дальше: ${rev.kept}</div>
+    <div style="margin-top:16px"><button class="b-ghost" onclick="rev=null;mode='card';load();loadRevStatus()">← к стеллажу</button></div>
+  </div>`;
+  rev=null;mode='done_rev';
+}
 function render(){
   $('#lsbtn').textContent=mode==='list'?'· 📦 по одному':'· 🔍 список';
+  if(mode==='rev')return renderRev();
+  if(mode==='done_rev')return;
   if(mode==='list')return renderList();
   if(!items.length){$('#stage').innerHTML='<div class="card muted">Стеллажи пусты. Всё либо в деле, либо сделано. ✨</div>';return}
   const b=items[0];
@@ -109,7 +175,7 @@ function render(){
 // режим списка: найти конкретный товар глазами или поиском, клик кладёт его
 // первым в карточную очередь - все действия (фокус/переименовать/🗑) уже там
 let mode='card';
-function toggleList(){mode=mode==='list'?'card':'list';render()}
+function toggleList(){mode=mode==='list'?'card':'list';render();loadRevStatus()}
 function renderList(){
   if(!items.length){$('#stage').innerHTML='<div class="card muted">Стеллажи пусты. Всё либо в деле, либо сделано. ✨</div>';return}
   $('#stage').innerHTML='<div class="in"><input id="q" placeholder="поиск по стеллажам…"><div id="rows"></div></div>';
@@ -166,10 +232,14 @@ async function act(to){
   setTimeout(render,280);
 }
 document.addEventListener('keydown',e=>{
-  if(mode!=='card'||e.target.tagName==='INPUT')return;
+  if(e.target.tagName==='INPUT')return;
+  if(mode==='rev'){
+    if(e.key==='1')revAct('focus'); if(e.key==='2')revKeep(); if(e.key==='3')revAct('trash');
+    return}
+  if(mode!=='card')return;
   if(e.key==='1')act('focus'); if(e.key==='2')skip(); if(e.key==='3')act('trash');
 });
-load();pollRc(false);
+load().then(loadRevStatus);pollRc(false);
 </script>
 </body>
 </html>
