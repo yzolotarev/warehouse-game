@@ -83,7 +83,7 @@ SQLite, ноль внешних зависимостей на фронте — c
 Linux, Python 3.11+, systemd (user), Chrome/Chromium для окна-приложения.
 
 ```bash
-git clone https://github.com/you/warehouse-game && cd warehouse-game
+git clone https://github.com/yzolotarev/warehouse-game && cd warehouse-game
 ./deploy/install.sh
 ```
 
