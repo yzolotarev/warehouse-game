@@ -182,7 +182,8 @@
 
     // ── разбор фокуса ──
     ["✂ Разбор фокуса", "✂ Focus trim"],
-    ["фокус = «делаю сейчас», канон ≤5 · остальное честнее вернуть, где было", "focus = “doing now”, canon ≤5 · the rest is more honest to send back where it was"],
+    ["удар 1: может ли это ИИ? · удар 2: сделал / остаётся / вернуть где было", "hit 1: can AI do this? · hit 2: done / stays / send back where it was"],
+    ["удар 1 · может ли это сделать ИИ?", "hit 1 · can AI do this one?"],
     ["✂ Проредить фокус (", "✂ Trim the focus ("],
     ["фокус толще канона: «делаю сейчас» превратился в стеллаж", "focus is fatter than canon: “doing now” has become a rack"],
     ["🎯 Остаётся в фокусе", "🎯 Stays in focus"],

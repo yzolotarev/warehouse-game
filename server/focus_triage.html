@@ -25,7 +25,7 @@
 </head>
 <body><div id="wrap">
   <h1>✂ Разбор фокуса</h1>
-  <div id="sub">фокус = «делаю сейчас», канон ≤5 · остальное честнее вернуть, где было</div>
+  <div id="sub">удар 1: может ли это ИИ? · удар 2: сделал / остаётся / вернуть где было</div>
   <div id="stage"></div>
   <div id="cnt"></div>
   <a href="/">← в прихожую склада</a>
@@ -51,15 +51,30 @@ function render(){
   const b=items[0];
   const pal=b.pallet_title?` · 🧱 ${esc(b.pallet_title)}`:'';
   const dust=b.idle_days>3?` · <span style="color:var(--sand)">🕸 лежит ${b.idle_days} дн.</span>`:'';
+  // удар 1: разметка для робота (если ещё не решено) - ИИ должен получить свои
+  // задачи ДО того, как коробка уедет из фокуса; удар 2: судьба коробки
+  const tagPhase=b.ai_ok===null||b.ai_ok===undefined;
+  const btns=tagPhase
+    ?`<div class="meta" style="margin-bottom:8px">удар 1 · может ли это сделать ИИ?</div>
+      <button class="b-primary" onclick="tag(true)">🤖 Робот</button>
+      <button class="b-sec" onclick="tag(false)">🙅 Не робот</button>`
+    :`<button class="b-ok" onclick="done()">✅ Сделал</button>
+      <button class="b-sec" onclick="keep()">🎯 Остаётся в фокусе</button>
+      <button class="b-sec" onclick="back()">↩ ${HOME[b.origin]||HOME.rack}</button>
+      <button class="b-danger" title="уже неактуально" onclick="toTrash()">🗑</button>`;
   $('#stage').innerHTML=`<div class="card in">
-    <div class="meta">${b.starred?'⭐ ':''}#${b.id}${pal}${dust} · родилась ${b.born_at.slice(0,10)}</div>
+    <div class="meta">${b.starred?'⭐ ':''}${b.ai_ok===1?'🤖 ':''}#${b.id}${pal}${dust} · родилась ${b.born_at.slice(0,10)}</div>
     <div class="task">${esc(b.raw_text)}</div>
-    <button class="b-ok" onclick="done()">✅ Сделал</button>
-    <button class="b-sec" onclick="keep()">🎯 Остаётся в фокусе</button>
-    <button class="b-sec" onclick="back()">↩ ${HOME[b.origin]||HOME.rack}</button>
-    <button class="b-danger" title="уже неактуально" onclick="toTrash()">🗑</button>
+    ${btns}
   </div>`;
   $('#cnt').textContent=`осталось решить ${items.length} · в фокусе останется ~${keptN}+`;
+}
+async function tag(ok){
+  const b=items[0];
+  try{await api('/robot_mark',{id:b.id,ok})}
+  catch(e){alert('не отметилось: '+e.message);return}
+  b.ai_ok=ok?1:0;
+  render(); // та же коробка, удар 2
 }
 function keep(){keptN++;items.shift();render()}
 async function move(to){
@@ -73,6 +88,11 @@ function back(){move(items[0].origin)}
 function toTrash(){move('trash')}
 document.addEventListener('keydown',e=>{
   if(e.target.tagName==='INPUT'||!items.length)return;
+  const b=items[0];
+  if(b.ai_ok===null||b.ai_ok===undefined){ // удар 1
+    if(e.key==='1')tag(true);
+    if(e.key==='2')tag(false);
+    return}
   if(e.key==='1')done();
   if(e.key==='2')keep();
   if(e.key==='3')back();
