@@ -5,8 +5,9 @@ wh                  инбокс
 wh add "текст"      закинуть коробку в инбокс
 wh all              счётчики по полкам
 wh focus            очередь фокуса человека
-wh queue            окно ИИ-работника: до 5 робот-задач без отчёта
-wh report ID "..."  отчёт ИИ в коробку (НЕ закрывает - «Сделал» жмёт человек)
+wh queue            ящик робота: до 5 задач в работу
+wh done ID "..."    робот закрыл задачу (robot → done, отчёт обязателен)
+wh report ID "..."  стопор: задача остаётся, утром вернётся хозяину с комментарием
 """
 import json
 import sys
@@ -49,22 +50,27 @@ def main():
                 print(f"        🤖 отчёт: {b['ai_note']}")
     elif args and args[0] == "queue":
         d = api("/robot_queue")
-        shelf = {"focus": "🎯", "rack": "🗄", "pallet_step": "🧱", "waiting": "⏳"}
         if not d["items"]:
-            print("Окно пусто: робот-задач без отчёта нет.")
+            print("Ящик робота пуст: задач в работу нет.")
         for b in d["items"]:
-            print(f"#{b['id']:<4} {shelf.get(b['shelf'], '?')}  {b['raw_text']}")
+            print(f"#{b['id']:<4} {b['raw_text']}")
         tail = d["total"] - len(d["items"])
         if tail > 0:
-            print(f"... за окном ещё {tail} (втекут по мере отчётов)")
-        if d["reported"]:
-            print(f"🤖 отчётов ждёт человек: {d['reported']}")
+            print(f"... за окном ещё {tail} (втекут по мере закрытий)")
+        if d["stuck"]:
+            print(f"⛔ со стопором, утром вернутся хозяину: {d['stuck']}")
+    elif args and args[0] == "done":
+        if len(args) < 3:
+            sys.exit('wh done ID "что сделано, где результат"')
+        box_id, text = int(args[1]), " ".join(args[2:]).strip()
+        api("/box/robot_done", {"id": box_id, "note": text})
+        print(f"✅ #{box_id} закрыта роботом (очки не начисляются - они человечьи)")
     elif args and args[0] == "report":
         if len(args) < 3:
             sys.exit('wh report ID "текст отчёта"')
         box_id, text = int(args[1]), " ".join(args[2:]).strip()
         api("/box/ai_note", {"id": box_id, "text": text})
-        print(f"🤖 отчёт записан в #{box_id} - «Сделал» жмёт человек")
+        print(f"🤖 стопор записан в #{box_id} - утром коробка вернётся хозяину")
     else:
         boxes = api("/boxes?shelf=inbox")
         if not boxes:

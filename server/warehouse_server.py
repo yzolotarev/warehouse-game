@@ -40,7 +40,8 @@ OBSIDIAN_PROJECTS = Path(os.environ.get(
 OBSIDIAN_MIND = Path(os.environ.get(
     "WAREHOUSE_OBSIDIAN_MIND", Path.home() / "Obsidian/9ListsHybrid/2nd brain"))
 
-SHELVES = {"inbox", "focus", "rack", "pallet_step", "waiting", "done", "trash", "mind", "archived"}
+SHELVES = {"inbox", "focus", "rack", "pallet_step", "waiting", "done", "trash", "mind",
+           "archived", "robot"}
 TRIAGE_POINTS = 1     # за разобранную коробку
 RITUAL_POINTS = 10    # за инбокс, разобранный до нуля
 DONE_POINTS = 3       # за сделанную задачу
@@ -1762,35 +1763,86 @@ class RobotMark(BaseModel):
 
 @app.post("/robot_mark")
 def robot_mark(m: RobotMark):
+    """«Робот» = коробка УХОДИТ из своего списка в ящик робота (полка robot).
+    Несделанное вернётся в инбокс на следующий день (см. _robot_return)."""
     with db() as conn:
-        if not conn.execute("SELECT 1 FROM boxes WHERE id=?", (m.id,)).fetchone():
+        row = conn.execute("SELECT shelf FROM boxes WHERE id=?", (m.id,)).fetchone()
+        if not row:
             raise HTTPException(404, "нет такой коробки")
         conn.execute("UPDATE boxes SET ai_ok=? WHERE id=?", (1 if m.ok else 0, m.id))
-        log_event(conn, "robot_mark", id=m.id, ok=m.ok)
+        if m.ok and row["shelf"] != "robot":
+            conn.execute(
+                "UPDATE boxes SET shelf='robot', starred=0, starred_at=NULL WHERE id=?",
+                (m.id,))
+            conn.execute(
+                "INSERT INTO moves(box_id, from_shelf, to_shelf) VALUES(?, ?, 'robot')",
+                (m.id, row["shelf"]))
+        log_event(conn, "robot_mark", id=m.id, ok=m.ok, frm=row["shelf"])
     return {"ok": True}
+
+
+class RobotDone(BaseModel):
+    id: int
+    note: str
+
+
+@app.post("/box/robot_done")
+def robot_done(d: RobotDone):
+    """Робот закрывает сделанную задачу сам: robot → done, отчёт в ai_note.
+    Очки и перекус НЕ начисляются - экономика меряет энергию человека."""
+    note = d.note.strip()
+    if not note:
+        raise HTTPException(400, "отчёт обязателен: что сделано и где результат")
+    with db() as conn:
+        row = conn.execute("SELECT shelf FROM boxes WHERE id=?", (d.id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "нет такой коробки")
+        if row["shelf"] != "robot":
+            raise HTTPException(400, "закрывать можно только коробки из ящика робота")
+        conn.execute("UPDATE boxes SET shelf='done', ai_note=? WHERE id=?", (note, d.id))
+        conn.execute(
+            "INSERT INTO moves(box_id, from_shelf, to_shelf) VALUES(?, 'robot', 'done')",
+            (d.id,))
+        log_event(conn, "robot_done", id=d.id, note=note[:200])
+    return {"ok": True}
+
+
+def _robot_return(conn):
+    """Утренний возврат: всё, что робот не закрыл за вчера, летит в инбокс
+    с пометкой «было у робота» и стопором - хозяин решит судьбу на разборе."""
+    rows = conn.execute("SELECT id, raw_text, ai_note FROM boxes WHERE shelf='robot'").fetchall()
+    for r in rows:
+        text = r["raw_text"]
+        if not text.startswith("🤖 было у робота"):
+            text = "🤖 было у робота · " + text
+        if r["ai_note"]:
+            text += f"\n\n🤖 стопор: {r['ai_note']}"
+        conn.execute(
+            "UPDATE boxes SET shelf='inbox', raw_text=?, ai_ok=NULL, ai_note=NULL,"
+            " triage_pass=0 WHERE id=?", (text, r["id"]))
+        conn.execute(
+            "INSERT INTO moves(box_id, from_shelf, to_shelf) VALUES(?, 'robot', 'inbox')",
+            (r["id"],))
+        log_event(conn, "robot_return", id=r["id"])
+    return len(rows)
 
 
 @app.get("/robot_queue")
 def robot_queue():
-    """Окно ИИ-работника: первые 5 робот-задач без отчёта. Скользит само:
-    агент написал отчёт (ai_note) - коробка выпала из окна, втекла следующая.
-    Порядок: сначала фокус человека, потом старые. Никакого состояния - чистая
-    арифметика поверх разметки."""
-    ph = ",".join("?" * len(AI_SHELVES))
+    """Ящик робота: задачи без отчёта - в работу; со стопором (ai_note) - ждут
+    утреннего возврата в инбокс хозяина. Окно AI_WINDOW - защита от цунами."""
     with db() as conn:
         items = [dict(r) for r in conn.execute(
-            f"SELECT id, raw_text, shelf, context, pallet_id, born_at FROM boxes "
-            f"WHERE shelf IN ({ph}) AND ai_ok=1 AND ai_note IS NULL "
-            f"AND {AI_NOT_PROJECT} "
-            "ORDER BY (shelf='focus') DESC, id LIMIT ?", (*AI_SHELVES, AI_WINDOW))]
+            "SELECT id, raw_text, shelf, context, pallet_id, born_at FROM boxes "
+            "WHERE shelf='robot' AND ai_note IS NULL ORDER BY id LIMIT ?",
+            (AI_WINDOW,))]
         total = conn.execute(
-            f"SELECT COUNT(*) c FROM boxes WHERE shelf IN ({ph}) AND ai_ok=1 "
-            f"AND ai_note IS NULL AND {AI_NOT_PROJECT}", AI_SHELVES).fetchone()["c"]
-        reported = conn.execute(
-            f"SELECT COUNT(*) c FROM boxes WHERE shelf IN ({ph}) "
-            "AND ai_note IS NOT NULL", AI_SHELVES).fetchone()["c"]
-    return {"items": items, "total": total, "reported": reported,
-            "window": AI_WINDOW}
+            "SELECT COUNT(*) c FROM boxes WHERE shelf='robot' AND ai_note IS NULL"
+        ).fetchone()["c"]
+        stuck = conn.execute(
+            "SELECT COUNT(*) c FROM boxes WHERE shelf='robot' AND ai_note IS NOT NULL"
+        ).fetchone()["c"]
+    return {"items": items, "total": total, "stuck": stuck, "window": AI_WINDOW}
 
 
 FOCUS_TRIM_AT = 5  # канон: фокус ≤5; толще - очередь «что сейчас» зовёт проредить
@@ -2845,6 +2897,13 @@ def scheduler():
                 else:
                     set_flag(conn, "vacation_until", "")
                     log_event(conn, "vacation_expired")
+        # 🤖 утренний возврат: несделанное роботом за вчера - в инбокс хозяина
+        with db() as conn:
+            if get_flag(conn, "last_robot_return") != today:
+                n = _robot_return(conn)
+                set_flag(conn, "last_robot_return", today)
+                if n:
+                    log_event(conn, "robot_return_batch", n=n)
         # автоконтекстуализация: пачка коробок приехала на стеллаж и настало затишье
         dirty = get_flag_standalone("recontext_dirty")
         if dirty and not _recontext_running.locked():

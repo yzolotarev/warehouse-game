@@ -25,7 +25,7 @@
 </head>
 <body><div id="wrap">
   <h1>✂ Разбор фокуса</h1>
-  <div id="sub">проход 1: разметить всё для робота · проход 2: судьба каждой коробки</div>
+  <div id="sub">проход 1: что может робот - уезжает к нему · проход 2: судьба остальных</div>
   <div id="stage"></div>
   <div id="cnt"></div>
   <a href="/">← в прихожую склада</a>
@@ -76,7 +76,8 @@ async function tag(ok){
   const b=items.find(x=>x.ai_ok===null||x.ai_ok===undefined);
   try{await api('/robot_mark',{id:b.id,ok})}
   catch(e){alert('не отметилось: '+e.message);return}
-  b.ai_ok=ok?1:0;
+  if(ok)items.splice(items.indexOf(b),1); // «Робот» = уехала в ящик робота
+  else b.ai_ok=0;
   if(!items.some(x=>x.ai_ok===null||x.ai_ok===undefined)&&window.juiceWin)
     juiceWin('Фокус протегирован!'); // проход 1 закрыт - переходим к судьбам
   render();
