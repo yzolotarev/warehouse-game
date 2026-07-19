@@ -54,30 +54,29 @@ function render(){
   $('#stage').innerHTML=`<div class="card in">
     <div class="meta">${b.starred?'⭐ ':''}#${b.id}${pal}${dust} · родилась ${b.born_at.slice(0,10)}</div>
     <div class="task">${esc(b.raw_text)}</div>
-    <button class="b-ok" onclick="keep()">🎯 Остаётся в фокусе</button>
+    <button class="b-ok" onclick="done()">✅ Сделал</button>
+    <button class="b-sec" onclick="keep()">🎯 Остаётся в фокусе</button>
     <button class="b-sec" onclick="back()">↩ ${HOME[b.origin]||HOME.rack}</button>
     <button class="b-danger" title="уже неактуально" onclick="toTrash()">🗑</button>
   </div>`;
   $('#cnt').textContent=`осталось решить ${items.length} · в фокусе останется ~${keptN}+`;
 }
 function keep(){keptN++;items.shift();render()}
-async function back(){
+async function move(to){
   const b=items[0];
-  try{await api('/move',{id:b.id,to:b.origin})}
+  try{await api('/move',{id:b.id,to})}
   catch(e){alert('не уехала: '+e.message);return}
   items.shift();render();
 }
-async function toTrash(){
-  const b=items[0];
-  try{await api('/move',{id:b.id,to:'trash'})}
-  catch(e){alert('не уехала: '+e.message);return}
-  items.shift();render();
-}
+function done(){move('done');window.juice&&juice('done')}
+function back(){move(items[0].origin)}
+function toTrash(){move('trash')}
 document.addEventListener('keydown',e=>{
   if(e.target.tagName==='INPUT'||!items.length)return;
-  if(e.key==='1')keep();
-  if(e.key==='2')back();
-  if(e.key==='3')toTrash();
+  if(e.key==='1')done();
+  if(e.key==='2')keep();
+  if(e.key==='3')back();
+  if(e.key==='4')toTrash();
 });
 load();
 </script>

@@ -186,6 +186,7 @@
     ["✂ Проредить фокус (", "✂ Trim the focus ("],
     ["фокус толще канона: «делаю сейчас» превратился в стеллаж", "focus is fatter than canon: “doing now” has become a rack"],
     ["🎯 Остаётся в фокусе", "🎯 Stays in focus"],
+    ["✅ Сделал", "✅ Did it"],
     ["🧱 обратно в проект", "🧱 back to its project"],
     ["🗄 на стеллаж", "🗄 to the rack"],
     ["⏳ в ожидание", "⏳ to waiting"],
