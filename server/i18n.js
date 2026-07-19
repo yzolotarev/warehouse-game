@@ -168,6 +168,8 @@
     ["🚶 уличная ✓ · убрать", "🚶 street ✓ · remove"],
     ["🚶 На улицу", "🚶 Street errand"],
 
+    [" · ←→ листать", " · ←→ browse"],
+
     // ── очередь «что сейчас» (/whatnow) ──
     ["🤖 Разметить для робота (", "🤖 Mark for the robot ("],
     ["две кнопки на коробку - и ИИ сможет брать твои задачи", "two buttons per box - and AI can pick up your tasks"],

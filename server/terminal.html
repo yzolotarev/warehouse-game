@@ -268,7 +268,8 @@ function nextItem(){
   $('triage').style.display='block';$('empty').style.display='none';
   $('more').style.display='block';resetMore();syncStreetBtn();
   const src={pc:'💻',phone:'📱',cli:'⌨️'}[cur.source]||'·';
-  $('boxmeta').textContent=`проход ${pass+1}/${P.length} · #${cur.id} ${src} · в пачке ещё ${P[pass].items.length}`;
+  $('boxmeta').textContent=`проход ${pass+1}/${P.length} · #${cur.id} ${src} · в пачке ещё ${P[pass].items.length}`
+    +(P[pass].items.length>1?' · ←→ листать':'');
   $('boxtext').textContent=cur.raw_text;
   $('question').textContent=P[pass].q;
   let hint=P[pass].hint||'';
@@ -471,6 +472,11 @@ document.addEventListener('keydown',e=>{
     if(g&&g.offsetParent!==null){e.preventDefault();g.click()}
     return}
   if(e.key==='Backspace'){e.preventDefault();undo();return}
+  // ←/→ = листать пачку без решения (#83): текущая уезжает в конец / возвращается
+  if(e.key==='ArrowRight'&&!flying&&P[pass]&&P[pass].items.length>1){
+    P[pass].items.push(P[pass].items.shift());nextItem();return}
+  if(e.key==='ArrowLeft'&&!flying&&P[pass]&&P[pass].items.length>1){
+    P[pass].items.unshift(P[pass].items.pop());nextItem();return}
   const btns=$('btns').querySelectorAll('button');
   if(e.key==='1'&&btns[0])btns[0].click();
   if(e.key==='2'&&btns[1])btns[1].click();
