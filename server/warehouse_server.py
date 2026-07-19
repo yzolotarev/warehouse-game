@@ -1748,7 +1748,7 @@ def robot_triage():
         items = [dict(r) for r in conn.execute(
             f"SELECT id, raw_text, shelf, context, pallet_id, born_at FROM boxes "
             f"WHERE shelf IN ({ph}) AND ai_ok IS NULL AND {AI_NOT_PROJECT} "
-            "ORDER BY id", AI_SHELVES)]
+            "ORDER BY (shelf='focus') DESC, id", AI_SHELVES)]
         marked = conn.execute(
             f"SELECT COUNT(*) c FROM boxes WHERE shelf IN ({ph}) "
             "AND ai_ok IS NOT NULL", AI_SHELVES).fetchone()["c"]

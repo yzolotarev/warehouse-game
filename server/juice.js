@@ -39,6 +39,31 @@
     tone();aura();
   };
 
+  // ── 🏆 Маленькая победа: тост снизу справа + короткая фанфара ──
+  // juiceWin('Фокус протегирован!') — зовут конвейеры на закрытии этапа
+  window.juiceWin=function(text){
+    try{acx=acx||new(window.AudioContext||window.webkitAudioContext)();
+      [523.25,659.25,783.99,1046.5].forEach((f,i)=>{   // до-ми-соль-до: фанфара
+        const o=acx.createOscillator(),g=acx.createGain();
+        o.type='sine';o.frequency.value=f;g.gain.value=.05;
+        o.connect(g);g.connect(acx.destination);
+        const t=acx.currentTime+i*.09;
+        o.start(t);g.gain.setValueAtTime(.05,t);
+        g.gain.exponentialRampToValueAtTime(1e-4,t+.22);o.stop(t+.23);
+      });
+    }catch(e){}
+    const el=document.createElement('div');
+    el.textContent='🏆 '+text;
+    el.style.cssText='position:fixed;right:18px;bottom:18px;z-index:9999;'
+      +'background:var(--card);border:1px solid var(--ok);color:var(--ok);'
+      +'padding:10px 16px;border-radius:10px;font-size:14px;box-shadow:var(--card-shadow);'
+      +'transform:translateY(60px);opacity:0;transition:all .3s ease;pointer-events:none';
+    document.body.appendChild(el);
+    requestAnimationFrame(()=>{el.style.transform='none';el.style.opacity='1'});
+    setTimeout(()=>{el.style.transform='translateY(60px)';el.style.opacity='0';
+      setTimeout(()=>el.remove(),350)},2600);
+  };
+
   // ── 💥 Перебор! — вспышка на кнопке "в фокус" если >5 ──
   window.focusWarn=async function(btnEl){
     let count;

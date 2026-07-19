@@ -224,6 +224,7 @@
     ["⤵ позже", "⤵ later"],
     ["пропустить, решу позже", "skip, decide later"],
     ["Всё размечено. ✨", "Everything is sorted. ✨"],
+    ["🏆 Фокус протегирован!", "🏆 Focus fully tagged!"],
     ["За этот проход: ", "This pass: "],
     ["Новые коробки появятся здесь сами, как только родятся.", "New boxes will show up here on their own as they are born."],
     ["осталось ", "left: "],
