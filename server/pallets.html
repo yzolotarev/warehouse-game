@@ -415,7 +415,9 @@ async function addStepWait(pid){
   beep(300,.12);load();
 }
 function curPallet(){
-  if(unformed.length)return null;
+  // не «есть ли неоформленные», а «смотрим ли карточку проекта»: раньше любой
+  // неоформленный проект глушил клавишу P на всей странице (#47)
+  if(mode!=='list')return null;
   return pi<pallets.length?pallets[pi]:frozen[pi-pallets.length];
 }
 async function bump(id){
