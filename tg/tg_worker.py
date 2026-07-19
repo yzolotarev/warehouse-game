@@ -43,19 +43,21 @@ def srv(path, payload=None):
 #   z|id    → позже (в конец очереди)
 TRI = {}  # chat_id -> {"ids": [box ids], "done": n} (сессия разбора, in-memory)
 
+# порядок как в терминале (19.07): «техпроект?» в конце - спрашивается, когда
+# уже ясно, что это дело и один конкретный шаг
 PASSES = [
-    ("Это для технического проекта?",
-     [[("🤖 Да, техпроект", "t|{id}"), ("🚫 Нет", "p|{id}|1")],
-      [("✔ уже сделано", "m|{id}|done"), ("🗑", "m|{id}|trash"), ("⤵ позже", "z|{id}")]]),
     ("Это дело?",
-     [[("✅ Дело", "p|{id}|2"), ("🚫 Не дело", "p|{id}|3")],
+     [[("✅ Дело", "p|{id}|1"), ("🚫 Не дело", "p|{id}|2")],
       [("✔ уже сделано", "m|{id}|done"), ("🗑", "m|{id}|trash"), ("⤵ позже", "z|{id}")]]),
     ("Это один конкретный шаг?",
-     [[("⚡ Один шаг", "p|{id}|4"), ("🧱 Проект", "m|{id}|pallet_step")],
+     [[("⚡ Один шаг", "p|{id}|3"), ("🧱 Проект", "m|{id}|pallet_step")],
       [("⤵ позже", "z|{id}")]]),
     ("Оставить как мысль?",
      [[("💭 Мысль", "m|{id}|mind"), ("🗑 Мусор", "m|{id}|trash")],
       [("⤵ позже", "z|{id}")]]),
+    ("Это для технического проекта?",
+     [[("🤖 Да, техпроект", "t|{id}"), ("🚫 Нет", "p|{id}|4")],
+      [("✔ уже сделано", "m|{id}|done"), ("🗑", "m|{id}|trash"), ("⤵ позже", "z|{id}")]]),
     ("Займёшься на этой неделе?",
      [[("🎯 В фокус", "m|{id}|focus"), ("🗄 Не сейчас", "m|{id}|rack")],
       [("⤵ позже", "z|{id}")]]),
@@ -125,7 +127,7 @@ def tech_kb(box_id, text):
     rows = [[{"text": f"📁 {c['name']}" + (" ✓" if c["confidence"] == "high" else ""),
               "callback_data": f"tc|{box_id}|{i}"}] for i, c in enumerate(cands)]
     rows.append([{"text": "📋 Весь список", "callback_data": f"tl|{box_id}|0"},
-                 {"text": "← назад", "callback_data": f"p|{box_id}|0"}])
+                 {"text": "← назад", "callback_data": f"p|{box_id}|3"}])
     return {"inline_keyboard": rows}
 
 
@@ -138,7 +140,7 @@ def tech_list_kb(box_id, page):
     nav = []
     if page > 0:
         nav.append({"text": "‹", "callback_data": f"tl|{box_id}|{page - 1}"})
-    nav.append({"text": "← назад", "callback_data": f"p|{box_id}|0"})
+    nav.append({"text": "← назад", "callback_data": f"p|{box_id}|3"})
     if (page + 1) * per < len(projects):
         nav.append({"text": "›", "callback_data": f"tl|{box_id}|{page + 1}"})
     rows.append(nav)
