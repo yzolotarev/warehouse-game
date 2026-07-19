@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <link rel="stylesheet" href="/style.css">
-<script src="/theme.js"></script><script src="/i18n.js"></script><script src="/storozh.js"></script>
+<script src="/theme.js"></script><script src="/i18n.js"></script><script src="/storozh.js"></script><script src="/juice.js"></script>
 <title>✂ Разбор фокуса</title>
 <style>
   html,body{margin:0;height:100%;display:flex;flex-direction:column;align-items:center;overflow:hidden}
@@ -25,7 +25,7 @@
 </head>
 <body><div id="wrap">
   <h1>✂ Разбор фокуса</h1>
-  <div id="sub">удар 1: может ли это ИИ? · удар 2: сделал / остаётся / вернуть где было</div>
+  <div id="sub">проход 1: разметить всё для робота · проход 2: судьба каждой коробки</div>
   <div id="stage"></div>
   <div id="cnt"></div>
   <a href="/">← в прихожую склада</a>
@@ -48,14 +48,15 @@ function render(){
       В фокусе осталось: ${keptN}${keptN>trimAt?' - всё ещё толще канона, можно пройтись ещё раз':' 👍'}</div>`;
     $('#cnt').textContent='';return;
   }
-  const b=items[0];
+  // бетчинг, как в терминале: один вопрос по ВСЕЙ пачке, потом следующий.
+  // Проход 1 - разметка для робота (только неразмеченные), проход 2 - судьба
+  const tagQ=items.filter(x=>x.ai_ok===null||x.ai_ok===undefined);
+  const tagPhase=tagQ.length>0;
+  const b=tagPhase?tagQ[0]:items[0];
   const pal=b.pallet_title?` · 🧱 ${esc(b.pallet_title)}`:'';
   const dust=b.idle_days>3?` · <span style="color:var(--sand)">🕸 лежит ${b.idle_days} дн.</span>`:'';
-  // удар 1: разметка для робота (если ещё не решено) - ИИ должен получить свои
-  // задачи ДО того, как коробка уедет из фокуса; удар 2: судьба коробки
-  const tagPhase=b.ai_ok===null||b.ai_ok===undefined;
   const btns=tagPhase
-    ?`<div class="meta" style="margin-bottom:8px">удар 1 · может ли это сделать ИИ?</div>
+    ?`<div class="meta" style="margin-bottom:8px">проход 1 · может ли это сделать ИИ? (осталось ${tagQ.length})</div>
       <button class="b-primary" onclick="tag(true)">🤖 Робот</button>
       <button class="b-sec" onclick="tag(false)">🙅 Не робот</button>`
     :`<button class="b-ok" onclick="done()">✅ Сделал</button>
@@ -67,14 +68,18 @@ function render(){
     <div class="task">${esc(b.raw_text)}</div>
     ${btns}
   </div>`;
-  $('#cnt').textContent=`осталось решить ${items.length} · в фокусе останется ~${keptN}+`;
+  $('#cnt').textContent=tagPhase
+    ?`проход 1 из 2 · потом судьба всех ${items.length}`
+    :`осталось решить ${items.length} · в фокусе останется ~${keptN}+`;
 }
 async function tag(ok){
-  const b=items[0];
+  const b=items.find(x=>x.ai_ok===null||x.ai_ok===undefined);
   try{await api('/robot_mark',{id:b.id,ok})}
   catch(e){alert('не отметилось: '+e.message);return}
   b.ai_ok=ok?1:0;
-  render(); // та же коробка, удар 2
+  if(!items.some(x=>x.ai_ok===null||x.ai_ok===undefined)&&window.juiceWin)
+    juiceWin('Фокус протегирован!'); // проход 1 закрыт - переходим к судьбам
+  render();
 }
 function keep(){keptN++;items.shift();render()}
 async function move(to){
@@ -88,8 +93,7 @@ function back(){move(items[0].origin)}
 function toTrash(){move('trash')}
 document.addEventListener('keydown',e=>{
   if(e.target.tagName==='INPUT'||!items.length)return;
-  const b=items[0];
-  if(b.ai_ok===null||b.ai_ok===undefined){ // удар 1
+  if(items.some(x=>x.ai_ok===null||x.ai_ok===undefined)){ // проход 1
     if(e.key==='1')tag(true);
     if(e.key==='2')tag(false);
     return}
