@@ -309,7 +309,7 @@ def main():
                         "ответ (reply) на его реплику продолжает разговор\n"
                         "/улица - список уличных задач (он же висит в закрепе)"))
                     continue
-                if low in ("разбор", "razbor", "triage", "р"):
+                if low in ("разбор", "razbor", "triage", "р", "p", "r"):
                     tri_start(token, chat_id)
                     continue
                 reply_from = (msg.get("reply_to_message") or {}).get("from") or {}

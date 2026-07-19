@@ -462,6 +462,12 @@ function moveCtx(){
 }
 document.addEventListener('keydown',e=>{
   if(e.target.tagName==='INPUT'){if(e.key==='Enter')moveCtx();return}
+  if(e.key===' '){
+    // пробел = «→ разбирать» с экрана-зеркала (и только с него: во время
+    // конвейера пробел не должен жать кнопки)
+    const g=$('gobtn');
+    if(g&&g.offsetParent!==null){e.preventDefault();g.click()}
+    return}
   if(e.key==='Backspace'){e.preventDefault();undo();return}
   const btns=$('btns').querySelectorAll('button');
   if(e.key==='1'&&btns[0])btns[0].click();

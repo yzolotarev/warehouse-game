@@ -158,6 +158,9 @@ async function load(){
   document.getElementById('nowWhy').textContent=NOW.why+(next?'  |  дальше: '+next:'');
   document.getElementById('now').classList.toggle('calm',!!NOW.calm);
 }
+document.addEventListener('keydown',e=>{
+  if(e.key===' '&&e.target.tagName!=='INPUT'){e.preventDefault();go(NOW.url)}
+});
 renderStart();load();setInterval(load,15000);
 </script>
 </body>
