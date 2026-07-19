@@ -152,6 +152,7 @@ function renderGlow(){
     btn.onclick=async()=>{if(flying)return;flying=true;glowQ.shift();
       try{await api('/wait_check',{id:b.id,action})}
       catch(e){glowQ.unshift(b)} // не приняло - товар вернётся на экран
+      if(action==='focus')focusWarn(btn);
       beep(action==='done'?700:300,.12);window.juice&&juice('glow');flyNext()};
     $('btns').appendChild(btn);
   });
@@ -359,6 +360,7 @@ async function ship(item,shelf,ctx,extra){
   stageDone++; loadBar();
   beep(shelf==='trash'?180:560,.12);
   if(r.points>=10)beep(880,.3);
+  if(shelf==='focus'){try{focusN=((await api('/state')).counts||{}).focus||0;focusWarn(focusN,document.querySelector('#btns button:first-child'))}catch(e){}}
   window.juice&&juice('ship');
   loadMirror();
 }
@@ -387,10 +389,32 @@ function askWait(item){
   return false; // товар не снят: ждём выбора режима напоминаний
 }
 function techRoute(){
-  if(!cur||flying)return;
+  // без проверки flying: ответ «Да, техпроект» зовёт нас с уже поднятым флагом
+  // (кнопка ставит его до вызова) - проверка молча съедала клик
+  if(!cur)return;
   resetMore();
-  $('question').textContent='📡 Загружаю список проектов…';
+  $('question').textContent='📡 Ищу подходящий проект…';
   $('hint').textContent='';
+  $('btns').innerHTML='<button disabled>⏳</button>';
+  api('/tech_route_suggest',{id:cur.id,text:cur.raw_text}).then(resp=>{
+    const cs=(resp.candidates||[]).filter(c=>c.confidence!=='none');
+    if(cs.length)renderTechCandidates(cs);
+    else techRouteAll();
+  }).catch(()=>techRouteAll());
+}
+function renderTechCandidates(cs){
+  $('question').textContent='📡 Похоже, это про:';
+  $('hint').textContent='задача/идея попадёт в инбокс проекта';
+  $('btns').innerHTML='';
+  $('btns').classList.add('list');
+  cs.forEach(c=>{
+    addBtn(`📁 ${c.name}${c.confidence==='high'?' ✓':''}`,()=>techRouteConfirm(c));
+  });
+  addBtn('📋 Другой (весь список)',()=>techRouteAll());
+  addBtn('← Отмена',()=>nextItem());
+}
+function techRouteAll(){
+  $('question').textContent='📡 Загружаю список проектов…';
   $('btns').innerHTML='<button disabled>⏳</button>';
   api('/tech_projects').then(resp=>{
     const ps=resp.projects;

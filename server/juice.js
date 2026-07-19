@@ -38,4 +38,33 @@
     if(Math.random()>=0.75)return;   // 25% намеренной тишины
     tone();aura();
   };
+
+  // ── 💥 Перебор! — вспышка на кнопке "в фокус" если >5 ──
+  window.focusWarn=async function(btnEl){
+    let count;
+    try{count=((await (await fetch('/state')).json()).counts||{}).focus||0}catch(e){count=0}
+    if(count<=5)return;
+    if(!btnEl)btnEl=document.querySelector('#stage button, .b-primary, [onclick*=focus]');
+    if(!btnEl)return;
+    const msg=document.createElement('div');
+    msg.textContent=`⚠ Перебор! ${count} задач`;
+    msg.style.cssText='position:absolute;bottom:calc(100%+6px);left:50%;transform:translateX(-50%);'
+      +'background:var(--danger,#b3261e);color:#fff;font-size:12px;font-weight:600;'
+      +'padding:4px 12px;border-radius:6px;white-space:nowrap;z-index:10;'
+      +'animation:fadeUpOut 3s ease forwards;';
+    const p=btnEl.parentElement;if(p){p.style.position='relative';p.appendChild(msg);}
+    btnEl.style.animation='shake .4s ease';
+    btnEl.style.background='var(--danger,#b3261e)';btnEl.style.color='#fff';
+    setTimeout(()=>{btnEl.style.animation='';btnEl.style.background='';btnEl.style.color='';},3000);
+    tone();tone();
+    setTimeout(()=>msg.remove(),3100);
+  };
 })();
+
+// ── Shake + fadeUpOut keyframes (global) ──
+const __fw_style=document.createElement('style');
+__fw_style.textContent=`
+@keyframes shake{0%,to{transform:translateX(0)}20%{transform:translateX(-6px)}40%{transform:translateX(6px)}60%{transform:translateX(-4px)}80%{transform:translateX(4px)}}
+@keyframes fadeUpOut{0%{opacity:1;transform:translateX(-50%) translateY(0)}70%{opacity:1;transform:translateX(-50%) translateY(-4px)}to{opacity:0;transform:translateX(-50%) translateY(-10px)}}
+`;
+document.head.appendChild(__fw_style);

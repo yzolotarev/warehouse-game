@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <link rel="stylesheet" href="/style.css">
-<script src="/theme.js"></script><script src="/i18n.js"></script><script src="/storozh.js"></script>
-<title>🧰 Недельная пересборка</title>
+<script src="/theme.js"></script><script src="/i18n.js"></script><script src="/storozh.js"></script><script src="/juice.js"></script>
+<title>🧰 Общая пересборка</title>
 <style>
   html,body{margin:0;height:100%;display:flex;flex-direction:column;align-items:center;overflow:hidden}
   #wrap{width:min(660px,94vw);padding:24px 0;height:100%;box-sizing:border-box;display:flex;flex-direction:column}
@@ -31,16 +31,17 @@
 </style>
 </head>
 <body><div id="wrap">
-  <h1>🧰 Недельная пересборка <span style="color:var(--dim);font-weight:normal">= Week Review</span></h1>
-  <div id="sub">столп №2: раз в неделю пройтись по всему складу, чтобы он не сгнил</div>
+  <h1>🧰 Общая пересборка <span style="color:var(--dim);font-weight:normal">= General Review</span></h1>
+  <div id="sub">столп №2: каждые 3 дня пройтись по всему складу, чтобы он не сгнил</div>
   <div id="banner" onclick="location.href='/terminal'">⛔ Склад стоит: сначала разбери инбокс →</div>
+  <div id="sideglow" style="display:none;position:fixed;inset:0;pointer-events:none;z-index:1"></div>
   <div id="stage"></div>
   <a href="/">← в прихожую склада</a>
 </div>
 <script>
 "use strict";
 const $=s=>document.querySelector(s);
-let D=null, racks=[], pallets=[], frozen=[];
+let D=null, racks=[], pallets=[], frozen=[], focusItems=[], firstBox=true, history=[];
 async function api(p,body){
   const r=await fetch(p,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});
   if(r.status===423){$('#banner').style.display='block';throw new Error('blocked')}
@@ -48,22 +49,38 @@ async function api(p,body){
 }
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
 function beep(f,d){try{const a=beep.ac=beep.ac||new AudioContext(),o=a.createOscillator(),g=a.createGain();
-  o.type='triangle';o.frequency.value=f;g.gain.value=.05;o.connect(g);g.connect(a.destination);
+  o.type='triangle';o.frequency.value=f;g.gain.value=.04;o.connect(g);g.connect(a.destination);
   o.start();g.gain.exponentialRampToValueAtTime(1e-4,a.currentTime+d);o.stop(a.currentTime+d)}catch(e){}}
+function sideGlow(color,label){
+  const el=$('#sideglow');el.style.display='block';el.style.transition='none';
+  // фоновая вспышка
+  el.style.background=`linear-gradient(90deg,${color}22 0%,transparent 20%,transparent 80%,${color}22 100%)`;
+  el.textContent='';  // иконки по краям
+  const L=document.createElement('span');L.textContent='◀';L.style.cssText=`position:fixed;left:12px;top:50%;transform:translateY(-50%);font-size:28px;color:${color};opacity:.6`;
+  const R=document.createElement('span');R.textContent='▶';R.style.cssText=`position:fixed;right:12px;top:50%;transform:translateY(-50%);font-size:28px;color:${color};opacity:.6`;
+  el.appendChild(L);el.appendChild(R);
+  // чуть погодя — плавно гаснет
+  requestAnimationFrame(()=>{el.style.transition='opacity .5s ease,background .5s ease';
+    el.style.background='transparent';el.style.opacity='0';
+    setTimeout(()=>{el.style.display='none';el.style.opacity='1';el.innerHTML=''},600);});
+  // метка на стадии
+  const m=$('.meta');if(m){const old=m.textContent;m.textContent=label+' · '+old;
+    setTimeout(()=>{if(m.textContent.includes(label))m.textContent=old},700);}
+}
 async function load(){
   D=await api('/review_data');
-  racks=D.racks; pallets=D.pallets; frozen=D.frozen;
+  racks=D.racks; pallets=D.pallets; frozen=D.frozen; focusItems=D.focus_items||[];
   intro();
 }
 function intro(){
   $('#stage').innerHTML=`<div class="card in">
-    <div class="meta">неделя на складе</div>
+    <div class="meta">дней на складе</div>
     <div class="statrow">
-      <div><div class="stat">${D.week_points}</div><div class="statlbl">очков</div></div>
+      <div><div class="stat">${D.period_points}</div><div class="statlbl">очков</div></div>
       <div><div class="stat">${D.shipped}</div><div class="statlbl">отгружено</div></div>
       <div><div class="stat">${D.born}</div><div class="statlbl">коробок прибыло</div></div>
     </div>
-    <div class="meta">впереди: стеллажи (${racks.length}) → паллеты (${pallets.length}) → морозилка (${frozen.length})</div>
+    <div class="meta">впереди: стеллажи (${racks.length}) → паллеты (${pallets.length})${D.focus_review?` → 🎯 фокус (${D.focus_count})`:''} → морозилка (${frozen.length})</div>
     <div class="q">награда за пересборку: +${D.reward} очков</div>
     <button class="b-primary b-go" onclick="rackStep()">→ начать</button>
   </div>`;
@@ -72,24 +89,46 @@ function intro(){
 function rackStep(){
   if(!racks.length){palletStep();return}
   const b=racks[0];
+  const showQ=firstBox?'Ещё актуально?':''; // вопрос — только на первом проходе
+  firstBox=false;
+  $('#sub').style.display='none'; // убрать подпись после старта
   $('#stage').innerHTML=`<div class="card in" id="c">
-    <div class="meta">🗄 стеллажи · осталось ${racks.length} · ${esc(b.context||'без контекста')}</div>
+    <div class="meta">стеллажи · осталось ${racks.length} · ${esc(b.context||'без контекста')}</div>
     <div class="task">${esc(b.raw_text)}</div>
-    <div class="q">Ещё актуально?</div>
-    <button onclick="rackAct(null)">✅ Лежит дальше</button>
-    <button class="b-sec" onclick="rackAct('focus')">🎯 В фокус</button>
-    <button class="b-danger" onclick="rackAct('trash')">🗑 Уже нет</button>
+    ${showQ?`<div class="q">${showQ}</div>`:''}
+    <button class="b-sec" onclick="rackAct('focus')">1 🎯 В фокус</button>
+    <button onclick="rackAct(null)">2 ⏸ Лежит дальше</button>
+    <button class="b-danger" onclick="rackAct('trash')">3 🗑 Уже нет</button>
+    <button class="b-ok" onclick="rackAct('done')">4 ✅ Выполнено</button>
+    ${history.length?`<br><button class="b-ghost" onclick="undoRack()" style="margin-top:8px;font-size:12px">↩ Отменить (Backspace)</button>`:''}
   </div>`;
 }
 async function rackAct(to){
   const b=racks.shift();
+  const colors={focus:'var(--accent)',null:'var(--dim)',trash:'var(--danger)',done:'var(--gold)'};
+  const labels={focus:'🎯',null:'⏸',trash:'🗑',done:'✅'};
+  sideGlow(colors[to]||'var(--dim)',labels[to]||'✅');
   $('#c').classList.add('fly');beep(to==='trash'?180:520,.1);
-  if(to){try{await api('/move',{id:b.id,to})}catch(e){return}}
+  history.push({box:b,action:to});
+  try{await api('/review_rack_decide',{box_id:b.id,action:to||'null'})}catch(e){}
+  if(to==='done'){try{await api('/move',{id:b.id,to:'done'})}catch(e){}}
+  else if(to){try{await api('/move',{id:b.id,to})}catch(e){}}
+  if(to==='focus')focusWarn(document.querySelector('#stage button'));
   setTimeout(rackStep,260);
+}
+async function undoRack(){
+  if(!history.length)return;
+  const last=history.pop();
+  const b=last.box; const to=last.action;
+  beep(440,.08);
+  await api('/review_rack_undo',{box_id:b.id,action:to||'null'});
+  racks.unshift(b);
+  firstBox=false;
+  if(document.querySelector('#stage .card'))rackStep();
 }
 /* этап 2: живые паллеты по одной */
 function palletStep(){
-  if(!pallets.length){frozenStep();return}
+  if(!pallets.length){focusStep();return}
   const p=pallets[0];
   const steps=p.steps.map(s=>`<div class="${['done','archived'].includes(s.shelf)?'done':''}">
     ${['done','archived'].includes(s.shelf)?'✅':(s.shelf==='focus'?'🎯':'·')} ${esc(s.raw_text)}</div>`).join('')||'<span class="meta">шагов нет</span>';
@@ -124,6 +163,28 @@ async function palletFreeze(pid){
   beep(240,.15); pallets.shift();
   $('#c').classList.add('fly'); setTimeout(palletStep,260);
 }
+/* этап 2.5: фокус переполнен — разгружаем */
+function focusStep(){
+  if(!focusItems.length){frozenStep();return}
+  const b=focusItems[0];
+  const star=b.starred?'⭐ ':'';
+  $('#stage').innerHTML=`<div class="card in" id="c">
+    <div class="meta">🎯 фокус переполнен · осталось ${focusItems.length} · ${star}${esc(b.raw_text.slice(0,60))}</div>
+    <div class="task">${esc(b.raw_text)}</div>
+    <div class="q">Освободи фокус: верни на стеллаж или выбрось.</div>
+    <button class="b-sec" onclick="focusAct('focus')">1 🎯 Оставить</button>
+    <button class="b-ghost" onclick="focusAct('rack')">2 🗄 Вернуть на стеллаж</button>
+    <button class="b-danger" onclick="focusAct('trash')">3 🗑 Уже не надо</button>
+  </div>`;
+}
+async function focusAct(to){
+  const b=focusItems.shift();
+  const col=to==='focus'?'var(--accent)':to==='trash'?'var(--danger)':'var(--dim)';
+  sideGlow(col,to==='focus'?'🎯':to==='trash'?'🗑':'🗄');
+  $('#c').classList.add('fly');beep(to==='trash'?180:520,.1);
+  try{await api('/move',{id:b.id,to})}catch(e){}
+  setTimeout(focusStep,260);
+}
 /* этап 3: морозилка */
 function frozenStep(){
   if(!frozen.length){finish();return}
@@ -151,11 +212,20 @@ async function finish(){
     <div style="font-size:40px">✨</div>
     <div class="task">Склад пересобран.</div>
     <div class="q">${r.points?`+${r.points} очков`:'сегодня уже пересобран — очки не дублируются'}</div>
-    <div class="meta">следующая пересборка через неделю — склад позовёт сам</div>
+    <div class="meta">следующая пересборка через 3 дня — склад позовёт сам</div>
     <div class="meta" style="color:#ffd97a;cursor:pointer;margin-top:8px" onclick="location.href='/focus_page'">⭐ и отметь звезду на завтра → фокус</div>
     <div style="margin-top:16px"><button class="b-primary b-go" onclick="location.href='/'">→ в прихожую</button></div>
   </div>`;
 }
+document.addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT'){if(e.key==='Enter'){const btn=document.querySelector('#stage button.b-sec');if(btn)btn.click()}return}
+  if(e.key==='Backspace'){e.preventDefault();undoRack();return}
+  const btns=$('#stage').querySelectorAll('button:not(.b-go)');
+  if(e.key==='1'&&btns[0])btns[0].click();
+  if(e.key==='2'&&btns[1])btns[1].click();
+  if(e.key==='3'&&btns[2])btns[2].click();
+  if(e.key==='4'&&btns[3])btns[3].click();
+});
 load();
 </script>
 </body>

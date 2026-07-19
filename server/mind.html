@@ -80,7 +80,10 @@ async function toTrash(id){
   setTimeout(load,350);
 }
 document.addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA')return;
   if(e.key==='ArrowLeft')pg(-1); if(e.key==='ArrowRight')pg(1);
+  const btns=document.querySelectorAll('#stage .card button'),n=parseInt(e.key,10);
+  if(n>=1&&n<=btns.length)btns[n-1].click();
 });
 load();
 </script>

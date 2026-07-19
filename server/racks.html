@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <link rel="stylesheet" href="/style.css">
-<script src="/theme.js"></script><script src="/i18n.js"></script><script src="/storozh.js"></script>
+<script src="/theme.js"></script><script src="/i18n.js"></script><script src="/storozh.js"></script><script src="/juice.js"></script>
 <title>🗄 Стеллажи</title>
 <style>
   html,body{margin:0;height:100%;display:flex;flex-direction:column;align-items:center;overflow:hidden}
@@ -58,6 +58,16 @@ function esc(s){const d=document.createElement('div');d.textContent=s;return d.i
 function beep(f,d){try{const a=beep.ac=beep.ac||new AudioContext(),o=a.createOscillator(),g=a.createGain();
   o.type='triangle';o.frequency.value=f;g.gain.value=.05;o.connect(g);g.connect(a.destination);
   o.start();g.gain.exponentialRampToValueAtTime(1e-4,a.currentTime+d);o.stop(a.currentTime+d)}catch(e){}}
+function sideGlow(color,label){
+  const el=document.createElement('div');el.style.cssText='position:fixed;inset:0;pointer-events:none;z-index:1;display:block';
+  el.style.background=`linear-gradient(90deg,${color}22 0%,transparent 20%,transparent 80%,${color}22 100%)`;
+  const L=document.createElement('span');L.textContent='◀';L.style.cssText=`position:fixed;left:12px;top:50%;transform:translateY(-50%);font-size:28px;color:${color};opacity:.6`;
+  const R=document.createElement('span');R.textContent='▶';R.style.cssText=`position:fixed;right:12px;top:50%;transform:translateY(-50%);font-size:28px;color:${color};opacity:.6`;
+  el.appendChild(L);el.appendChild(R);document.body.appendChild(el);
+  requestAnimationFrame(()=>{el.style.transition='opacity .5s ease,background .5s ease';
+    el.style.background='transparent';el.style.opacity='0';
+    setTimeout(()=>el.remove(),600);});
+}
 async function load(){
   items=await api('/boxes?shelf=rack');
   items.sort((a,b)=>(a.context||'я').localeCompare(b.context||'я')||a.id-b.id);
@@ -93,6 +103,9 @@ async function loadRevStatus(){
   let st; try{st=await api('/rack_review_status')}catch(e){return}
   const b=$('#revbtn');
   if(mode!=='card'||!st.count){b.style.display='none';return}
+  if(st.blocked){b.style.display='block';
+    b.innerHTML='⛔ Склад стоит: разбери инбокс →';
+    b.onclick=()=>location.href='/terminal';return}
   b.style.display='block';
   b.textContent=st.reward_ready
     ?`🧹 Ревизия стеллажа: ${st.count} коробок, старейшей ${st.oldest_days} дн. → +${st.reward}⭐`
@@ -101,7 +114,7 @@ async function loadRevStatus(){
 }
 async function startRev(){
   try{focusN=((await api('/state')).counts||{}).focus||0}catch(e){focusN=0}
-  rev={q:items.slice().sort((a,b)=>a.born_at.localeCompare(b.born_at)),
+  rev={q:items.slice().sort((a,b)=>(a.entered_at||a.born_at).localeCompare(b.entered_at||b.born_at)),
        total:items.length,taken:0,trashed:0,kept:0};
   mode='rev';$('#revbtn').style.display='none';beep(500,.08);render();
 }
@@ -111,21 +124,22 @@ function renderRev(){
   const done=rev.total-rev.q.length;
   window.WH_setLoadBar&&window.WH_setLoadBar(Math.round(done/rev.total*100),`ревизия: ${done} из ${rev.total}`);
   const b=rev.q[0];
-  const age=Math.round((Date.now()-new Date(b.born_at))/864e5);
+  const age=Math.round((Date.now()-new Date(b.entered_at||b.born_at))/864e5);
   const warn=focusN>=5?`<div style="font-size:12.5px;color:var(--danger);margin-bottom:8px">⚠ фокус уже полон (${focusN}/5) - честнее «оставить» или «пофиг»</div>`:'';
   $('#stage').innerHTML=`<div class="card in" id="c">
     <div class="ctx">${esc(b.context||'·')}</div>
     <div class="meta">ревизия · ${done+1} из ${rev.total} · #${b.id} · лежит ${age} дн.</div>
     <div class="task">${esc(b.raw_text)}</div>${warn}
-    <button class="b-primary" onclick="revAct('focus')">🎯 В фокус</button>
-    <button onclick="revKeep()">Оставить ›</button>
-    <button class="b-danger" onclick="revAct('trash')">🗑 Пофиг</button>
+    <button class="b-primary" onclick="revAct('focus')">1 🎯 В фокус</button>
+    <button onclick="revKeep()">2 Оставить ›</button>
+    <button class="b-danger" onclick="revAct('trash')">3 🗑 Пофиг</button>
   </div>`;
 }
 async function revAct(to){
   const b=rev.q[0];
   $('#c').classList.add('fly');beep(to==='trash'?180:560,.12);
-  try{await api('/move',{id:b.id,to})}catch(e){return}
+  try{await api('/move',{id:b.id,to})}catch(e){$('#c').classList.remove('fly');render();return}
+  if(to==='focus'){const btns=document.querySelectorAll('#stage button');focusWarn(btns[0]);}
   rev[to==='trash'?'trashed':'taken']++;
   if(to==='focus')focusN++;
   items=items.filter(x=>x.id!==b.id);
@@ -143,6 +157,7 @@ async function finishRev(){
   $('#stage').innerHTML=`<div class="card in" style="padding:40px 0">
     <div style="font-size:19px">🧹 Ревизия готова${pts?` · +${pts}⭐`:''}</div>
     <div class="meta" style="margin-top:10px">взял в фокус: ${rev.taken} · выкинул: ${rev.trashed} · лежат дальше: ${rev.kept}</div>
+    ${pts?'':`<div class="meta" style="color:var(--danger);margin-top:6px">ни одного решения — без награды</div>`}
     <div style="margin-top:16px"><button class="b-ghost" onclick="rev=null;mode='card';load();loadRevStatus()">← к стеллажу</button></div>
   </div>`;
   rev=null;mode='done_rev';
@@ -154,14 +169,14 @@ function render(){
   if(mode==='list')return renderList();
   if(!items.length){$('#stage').innerHTML='<div class="card muted">Стеллажи пусты. Всё либо в деле, либо сделано. ✨</div>';return}
   const b=items[0];
-  const age=Math.round((Date.now()-new Date(b.born_at))/864e5);
+  const age=Math.round((Date.now()-new Date(b.entered_at||b.born_at))/864e5);
   $('#stage').innerHTML=`<div class="card in" id="c">
     <div class="ctx">${esc(b.context||'🤖 контекст в пути')}</div>
     <div class="meta">#${b.id} · лежит ${age} дн. · на стеллажах ещё ${items.length}</div>
     <div class="task">${esc(b.raw_text)}</div>
-    <button class="b-primary" onclick="act('focus')">🎯 В фокус</button>
-    <button onclick="skip()">Лежит дальше ›</button>
-    <button class="b-danger" onclick="act('trash')">🗑</button>
+    <button class="b-primary" onclick="act('focus')">1 🎯 В фокус</button>
+    <button onclick="skip()">2 Лежит дальше ›</button>
+    <button class="b-danger" onclick="act('trash')">3 🗑</button>
     <div style="margin-top:12px">
       <span id="mArr" style="cursor:pointer;color:var(--dim);font-size:12px" onclick="toggleMore()">▾ ещё</span>
       <div id="mRow" style="display:none;margin-top:8px">
@@ -188,7 +203,7 @@ function listRows(){
   const q=$('#q').value.trim().toLowerCase();
   const hit=items.filter(b=>!q||b.raw_text.toLowerCase().includes(q)||(b.context||'').toLowerCase().includes(q));
   $('#rows').innerHTML=hit.length?hit.map(b=>{
-    const age=Math.round((Date.now()-new Date(b.born_at))/864e5);
+    const age=Math.round((Date.now()-new Date(b.entered_at||b.born_at))/864e5);
     return `<div class="row" onclick="pick(${b.id})" title="взять в руки">
       <span class="rctx">${esc(b.context||'·')}</span>
       <span>${esc(b.raw_text)}</span>
@@ -221,13 +236,17 @@ async function streetCur(){
     beep(v?620:300,.08);render()}catch(e){}
 }
 function skip(){
+  sideGlow('var(--dim)','Лежит');
   const c=$('#c');c.classList.add('flyl');beep(300,.06);
   setTimeout(()=>{items.push(items.shift());render()},260);
 }
 async function act(to){
   const b=items[0];
+  const col=to==='focus'?'var(--accent)':to==='trash'?'var(--danger)':'var(--dim)';
+  sideGlow(col,to==='focus'?'🎯':to==='trash'?'🗑':'✅');
   $('#c').classList.add('fly');beep(to==='trash'?180:560,.12);
-  try{await api('/move',{id:b.id,to})}catch(e){return}
+  try{await api('/move',{id:b.id,to})}catch(e){$('#c').classList.remove('fly');render();return}
+  if(to==='focus')focusWarn();
   items.shift();
   setTimeout(render,280);
 }

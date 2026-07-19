@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <link rel="stylesheet" href="/style.css">
-<script src="/theme.js"></script><script src="/i18n.js"></script><script src="/storozh.js"></script>
+<script src="/theme.js"></script><script src="/i18n.js"></script><script src="/storozh.js"></script><script src="/juice.js"></script>
 <title>🚚 Отгрузка</title>
 <style>
   
@@ -61,9 +61,13 @@ async function back(id){
   const r=await fetch('/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,to:'focus'})});
   if(r.status===423){$('#stage').insertAdjacentHTML('afterbegin',
     '<div class="card" style="border-color:var(--danger);color:var(--danger);margin-bottom:12px;cursor:pointer" onclick="location.href=\'/terminal\'">⛔ Склад стоит: разбери входящие →</div>');return}
+  focusWarn();
   load()}
 document.addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA')return;
   if(e.key==='ArrowLeft')pg(-1); if(e.key==='ArrowRight')pg(1);
+  const btns=document.querySelectorAll('#stage .card button'),n=parseInt(e.key,10);
+  if(n>=1&&n<=btns.length)btns[n-1].click();
 });
 load();
 </script>

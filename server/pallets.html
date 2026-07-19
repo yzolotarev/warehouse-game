@@ -41,12 +41,14 @@
   <div id="pager" style="display:none">
     <button class="b-ghost" onclick="pg(-1)">‹</button><span id="cnt"></span><button class="b-ghost" onclick="pg(1)">›</button>
   </div>
+  <div id="sideglow" style="display:none;position:fixed;inset:0;pointer-events:none;z-index:1"></div>
 </div>
 <script>
 "use strict";
 window.WH_LOADBAR_OWNED=true; // нижняя шкала здесь = прогресс шагов текущего проекта, не часы дня
 const $=s=>document.querySelector(s);
 let unformed=[], pallets=[], frozen=[], seriesPts=2, pi=0;
+let rev=null, focusN=0; // ревью очереди проекта — тот же конвейер, что ревизия стеллажа
 function loadBar(nDone,nSteps,title){
   if(!window.WH_setLoadBar)return;
   if(nSteps===undefined){window.WH_setLoadBar(0,'нет открытого проекта');return}
@@ -81,6 +83,7 @@ const FORM_STEPS=[
 let formStep=0, formVals={}, formItemId=null;
 function render(){
   $('#pager').style.display='none';
+  if(mode==='rev')return renderRev();
   const total=pallets.length+frozen.length;
   if(mode==='form'&&!unformed.length)mode='list';
   if(!total&&unformed.length)mode='form'; // проектов нет вообще - сразу оформление
@@ -132,8 +135,12 @@ function render(){
   const focusBlock=inFocus.length
     ?`<div class="crit" style="color:var(--vio);margin-top:10px">🎯 в работе: ${inFocus.map(s=>esc(s.raw_text)).join(' · ')}</div>`:'';
   // СЛЕДУЮЩИЙ ШАГ = голова очереди; пусто и ничего в работе → проект встал, зови доение
+  const revBtn=queue.length>=2
+    ?`<span class="wbtn" style="opacity:1;color:var(--accent);cursor:pointer;font-size:12.5px;font-weight:normal"
+        onclick="startRev(${p.id})" title="пройтись по очереди по одной: в фокус / оставить / пофиг">🧹 ревью очереди (${queue.length})</span>`:'';
   const nextBlock=queue.length
-    ?`<div class="crit" style="color:var(--accent);font-weight:600;margin-top:10px">СЛЕДУЮЩИЙ ШАГ:</div>`
+    ?`<div class="crit" style="color:var(--accent);font-weight:600;margin-top:10px;display:flex;justify-content:space-between;align-items:baseline">
+        <span>СЛЕДУЮЩИЙ ШАГ:</span>${revBtn}</div>`
       +queue.map(s=>`<div class="step">🔹 ${esc(s.raw_text)}
         <span class="wbtn" title="взять в фокус — делать сейчас" onclick="stepFocus(${s.id})">🎯</span>
         <span class="wbtn" title="жду ответа/события — в Ожидание" onclick="stepWait(${s.id})">⏳</span></div>`).join('')
@@ -316,8 +323,21 @@ async function submitForm(id){
   setTimeout(()=>{if(unformed.length<=1)mode='list';load()},280);
 }
 function beep(f,d){try{const a=beep.ac=beep.ac||new AudioContext(),o=a.createOscillator(),g=a.createGain();
-  o.type='triangle';o.frequency.value=f;g.gain.value=.05;o.connect(g);g.connect(a.destination);
+  o.type='triangle';o.frequency.value=f;g.gain.value=.04;o.connect(g);g.connect(a.destination);
   o.start();g.gain.exponentialRampToValueAtTime(1e-4,a.currentTime+d);o.stop(a.currentTime+d)}catch(e){}}
+function sideGlow(color,label){
+  const el=$('#sideglow');el.style.display='block';el.style.transition='none';
+  el.style.background=`linear-gradient(90deg,${color}22 0%,transparent 20%,transparent 80%,${color}22 100%)`;
+  el.textContent='';
+  const L=document.createElement('span');L.textContent='◀';L.style.cssText=`position:fixed;left:12px;top:50%;transform:translateY(-50%);font-size:28px;color:${color};opacity:.6`;
+  const R=document.createElement('span');R.textContent='▶';R.style.cssText=`position:fixed;right:12px;top:50%;transform:translateY(-50%);font-size:28px;color:${color};opacity:.6`;
+  el.appendChild(L);el.appendChild(R);
+  requestAnimationFrame(()=>{el.style.transition='opacity .5s ease,background .5s ease';
+    el.style.background='transparent';el.style.opacity='0';
+    setTimeout(()=>{el.style.display='none';el.style.opacity='1';el.innerHTML=''},600);});
+  const m=$('div[class*="meta"]');if(m&&m.textContent.includes('ревью')){const old=m.textContent;m.textContent=label+' · '+old;
+    setTimeout(()=>{if(m.textContent.includes(label))m.textContent=old},700);}
+}
 async function addStep(pid){
   const v=$('#ns').value.trim(); if(!v)return;
   await api('/pallet/step',{pallet_id:pid,text:v});
@@ -327,7 +347,55 @@ async function addStep(pid){
 async function stepFocus(id){
   // тянем заряженный шаг из очереди проекта в фокус — «делаю сейчас»
   try{await api('/move',{id,to:'focus'})}catch(e){return}
+  focusWarn();
   beep(560,.1);window.juice&&juice('focus');load();
+}
+// ── ревью очереди проекта: тот же конвейер, что ревизия стеллажа, но по
+// шагам конкретного проекта — «в фокус / оставить / пофиг» по одному ──
+async function startRev(pid){
+  try{focusN=((await api('/state')).counts||{}).focus||0}catch(e){focusN=0}
+  const p=(pallets.find(x=>x.id===pid));
+  const q=p.steps.filter(s=>s.shelf==='pallet_step');
+  rev={pid,title:p.title,q,total:q.length,taken:0,trashed:0,kept:0};
+  mode='rev';beep(500,.08);render();
+}
+function renderRev(){
+  if(!rev.q.length)return finishRev();
+  const done=rev.total-rev.q.length;
+  window.WH_setLoadBar&&window.WH_setLoadBar(Math.round(done/rev.total*100),`ревью «${rev.title}»: ${done} из ${rev.total}`);
+  const b=rev.q[0];
+  const warn=focusN>=5?`<div style="font-size:12.5px;color:var(--danger);margin-bottom:8px">⚠ фокус уже полон (${focusN}/5) - честнее «оставить» или «пофиг»</div>`:'';
+  $('#stage').innerHTML=`<div class="card in" id="c">
+    <div class="meta">ревью «${esc(rev.title)}» · ${done+1} из ${rev.total}</div>
+    <div class="task">${esc(b.raw_text)}</div>${warn}
+    <button class="b-primary" onclick="revAct('focus')">1 🎯 В фокус</button>
+    <button onclick="revKeep()">2 Оставить ›</button>
+    <button class="b-danger" onclick="revAct('trash')">3 🗑 Пофиг</button>
+  </div>`;
+}
+async function revAct(to){
+  const b=rev.q[0];
+  const col=to==='focus'?'var(--accent)':to==='trash'?'var(--danger)':'var(--dim)';
+  sideGlow(col,to==='focus'?'🎯':to==='trash'?'🗑':'✅');
+  $('#c').classList.add('fly');beep(to==='trash'?180:560,.12);
+  try{await api('/move',{id:b.id,to})}catch(e){$('#c').classList.remove('fly');renderRev();return}
+  rev[to==='trash'?'trashed':'taken']++;
+  if(to==='focus'){focusN++;focusWarn();}
+  rev.q.shift();setTimeout(renderRev,280);
+}
+function revKeep(){
+  sideGlow('var(--dim)','✅');
+  $('#c').classList.add('flyl');beep(300,.06);
+  rev.kept++;rev.q.shift();setTimeout(renderRev,260);
+}
+function finishRev(){
+  window.WH_setLoadBar&&window.WH_setLoadBar(100,'ревью готово');
+  beep(660,.1);setTimeout(()=>beep(880,.14),120);
+  $('#stage').innerHTML=`<div class="card in" style="padding:40px 0">
+    <div style="font-size:19px">🧹 Ревью «${esc(rev.title)}» готово</div>
+    <div class="meta" style="margin-top:10px">взял в фокус: ${rev.taken} · выкинул: ${rev.trashed} · лежат дальше: ${rev.kept}</div>
+    <div style="margin-top:16px"><button class="b-ghost" onclick="rev=null;mode='list';load()">← к проекту</button></div>
+  </div>`;
 }
 function editCrumb(pid){
   const p=curPallet();
@@ -357,6 +425,9 @@ async function bump(id){
 }
 document.addEventListener('keydown',e=>{
   if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA')return;
+  if(mode==='rev'){
+    if(e.key==='1')revAct('focus'); if(e.key==='2')revKeep(); if(e.key==='3')revAct('trash');
+    return}
   if(e.key==='ArrowLeft')pg(-1); if(e.key==='ArrowRight')pg(1);
   if(['p','P','з','З'].includes(e.key))bump();
 });

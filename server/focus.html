@@ -26,6 +26,7 @@
 <body><div id="wrap">
   <h1>🎯 Фокус <span style="color:var(--dim);font-weight:normal">= делаю сейчас (≤5)</span></h1>
   <div id="sub">одна задача на экране - её и делай · ⭐ = главное на завтра, утром покажу её первой</div>
+  <div id="star-banner" style="display:none;margin-bottom:10px;padding:10px 14px;border-radius:10px;border:1px solid var(--gold);color:var(--gold);font-size:13px;cursor:pointer" onclick="unstarAll();"></div>
   <div id="stage"></div>
   <div id="pager" style="display:none">
     <button class="b-ghost" onclick="pg(-1)">‹</button><span id="cnt"></span><button class="b-ghost" onclick="pg(1)">›</button>
@@ -41,7 +42,7 @@ function esc(s){const d=document.createElement('div');d.textContent=s;return d.i
 function beep(f,d){try{const a=beep.ac=beep.ac||new AudioContext(),o=a.createOscillator(),g=a.createGain();
   o.type='triangle';o.frequency.value=f;g.gain.value=.05;o.connect(g);g.connect(a.destination);
   o.start();g.gain.exponentialRampToValueAtTime(1e-4,a.currentTime+d);o.stop(a.currentTime+d)}catch(e){}}
-let staleDays=3, dryPallets=[];
+let staleDays=3, dryPallets=[], hiddenStars=0, hiddenStarIds=[];
 let timerSession=null, timerBoxId=null, timerInterval=null;
 function fmtElapsed(s){
   const h=Math.floor(s/3600), m=Math.floor((s%3600)/60), se=s%60;
@@ -66,10 +67,16 @@ async function checkTimer(){
 async function load(){
   const d=await api('/focus');
   items=d.items; staleDays=d.stale_days; dryPallets=d.dry_pallets||[];
+  hiddenStars=d.hidden_stars||0; hiddenStarIds=d.hidden_star_ids||[];
   i=Math.min(i,Math.max(0,items.length-1)); render();
   await checkTimer();
 }
 function render(){
+  const sb=$('#star-banner');
+  if(hiddenStars){
+    sb.style.display='block';
+    sb.textContent=`⭐ ${hiddenStars} задач(а) отложены до завтра после 3:00 · нажмите чтобы снять все звёзды`;
+  }else{sb.style.display='none';}
   if(!items.length){
     // тяга: фокус пуст → зовём доить проекты вместо тупика «наполни на разборе»
     const milk=dryPallets.length
@@ -97,6 +104,7 @@ function render(){
   $('#stage').innerHTML=`<div class="card in" id="c" ${b.starred?'style="border-color:var(--gold)"':''}>
     <div class="meta">${b.starred?'⭐ ':''}#${b.id} · родилась ${b.born_at.slice(0,10)}${pal}${dust}${b.elapsed_seconds_total?` · ⏱ ${fmtElapsed(b.elapsed_seconds_total)}`:''}</div>
     <div class="task">${esc(b.raw_text)}</div>
+    ${b.ai_note?`<div class="meta" style="margin:4px 0 10px;padding:8px 10px;border:1px solid var(--vio);border-radius:8px;text-align:left;white-space:pre-wrap">🤖 отчёт ИИ: ${esc(b.ai_note)}</div>`:''}
     <button class="b-ok" onclick="done(${b.id})">✅ Сделал +${reward}</button>
     ${starBtn}
     <span id="timer-row" style="display:inline-block;margin:6px 0">
@@ -206,9 +214,13 @@ async function setStar(id,on){
   const r=await fetch('/star',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,on})});
   if(r.status===409){beep(180,.12);
     $('#stage').insertAdjacentHTML('afterbegin',
-      '<div class="card" style="border-color:var(--gold);color:var(--gold);margin-bottom:12px">уже 2 ⭐ — сними одну, окрестность внимания не резиновая</div>');
+      '<div class="card" style="border-color:var(--gold);color:var(--gold);margin-bottom:12px">уже 4 ⭐ — сними одну, окрестность внимания не резиновая</div>');
     setTimeout(load,1800);return}
   beep(on?880:340,.12);
+  if(on){const m=document.createElement('div');m.className='card in';
+    m.style.cssText='border-color:var(--gold);color:var(--gold);margin-bottom:12px;padding:10px';
+    m.textContent='⭐ Звезда зажжена — покажется завтра после 3:00';
+    $('#stage').insertAdjacentElement('afterbegin',m);setTimeout(()=>m.remove(),2500);}
   const cur=items[i]&&items[i].id;
   await load();
   i=Math.max(0,items.findIndex(o=>o.id===cur));render();
@@ -219,8 +231,15 @@ async function toTrash(id){
   try{await mv(id,'trash')}catch(e){return}
   setTimeout(load,350);
 }
+async function unstarAll(){
+  for(const x of items){if(x.starred)try{await api('/star',{id:x.id,on:false})}catch(e){}}
+  beep(440,.1);load();
+}
 document.addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA')return;
   if(e.key==='ArrowLeft')pg(-1); if(e.key==='ArrowRight')pg(1);
+  const btns=document.querySelectorAll('#stage button'),n=parseInt(e.key,10);
+  if(n>=1&&n<=btns.length)btns[n-1].click();
 });
 load();
 </script>

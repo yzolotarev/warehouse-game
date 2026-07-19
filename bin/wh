@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""wh - терминальный вид склада. wh | wh add "текст" | wh all"""
+"""wh - терминальный вид склада.
+
+wh                  инбокс
+wh add "текст"      закинуть коробку в инбокс
+wh all              счётчики по полкам
+wh focus            очередь фокуса человека
+wh queue            окно ИИ-работника: до 5 робот-задач без отчёта
+wh report ID "..."  отчёт ИИ в коробку (НЕ закрывает - «Сделал» жмёт человек)
+"""
 import json
 import sys
 import urllib.request
@@ -28,6 +36,35 @@ def main():
         h = api("/health")
         for shelf, n in sorted(h["counts"].items()):
             print(f"{shelf:12} {n}")
+    elif args and args[0] == "focus":
+        d = api("/focus")
+        if not d["items"]:
+            print("Фокус пуст.")
+        for b in d["items"]:
+            star = "⭐" if b["starred"] else "  "
+            pal = f"  🧱 {b['pallet_title']}" if b["pallet_title"] else ""
+            idle = f"  🕸{b['idle_days']}д" if b["idle_days"] > d["stale_days"] else ""
+            print(f"{star} #{b['id']:<4} {b['raw_text']}{pal}{idle}")
+            if b.get("ai_note"):
+                print(f"        🤖 отчёт: {b['ai_note']}")
+    elif args and args[0] == "queue":
+        d = api("/robot_queue")
+        shelf = {"focus": "🎯", "rack": "🗄", "pallet_step": "🧱", "waiting": "⏳"}
+        if not d["items"]:
+            print("Окно пусто: робот-задач без отчёта нет.")
+        for b in d["items"]:
+            print(f"#{b['id']:<4} {shelf.get(b['shelf'], '?')}  {b['raw_text']}")
+        tail = d["total"] - len(d["items"])
+        if tail > 0:
+            print(f"... за окном ещё {tail} (втекут по мере отчётов)")
+        if d["reported"]:
+            print(f"🤖 отчётов ждёт человек: {d['reported']}")
+    elif args and args[0] == "report":
+        if len(args) < 3:
+            sys.exit('wh report ID "текст отчёта"')
+        box_id, text = int(args[1]), " ".join(args[2:]).strip()
+        api("/box/ai_note", {"id": box_id, "text": text})
+        print(f"🤖 отчёт записан в #{box_id} - «Сделал» жмёт человек")
     else:
         boxes = api("/boxes?shelf=inbox")
         if not boxes:

@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="/style.css">
+<script src="/theme.js"></script><script src="/i18n.js"></script><script src="/storozh.js"></script>
+<title>📡 Разбор по проектам</title>
+<style>
+  html,body{margin:0;height:100%;display:flex;flex-direction:column;align-items:center;overflow:hidden}
+  #wrap{width:min(640px,94vw);padding:22px 0;height:100%;box-sizing:border-box;display:flex;flex-direction:column}
+  h1{margin:0}
+  #sub{color:var(--dim);font-size:13px;margin-bottom:18px}
+  #stage{flex:1 1 auto;display:flex;flex-direction:column;justify-content:center;min-height:0}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:22px;text-align:center}
+  .task{font-size:19px;line-height:1.4;margin:8px 0 18px;max-height:32vh;overflow-y:auto;white-space:pre-wrap}
+  .meta{font-size:12px;color:var(--dim)}
+  button{margin:4px 6px}
+  .muted{color:var(--dim);text-align:center;padding:40px 0;font-size:15px}
+  .in{animation:inup .25s ease}
+  @keyframes inup{from{transform:translateY(14px);opacity:0}}
+  a{font-size:13px;text-decoration:none;margin-top:auto;text-align:center}
+  #cnt{text-align:center;color:var(--dim);font-size:13px;margin-top:12px}
+  #all{max-height:34vh;overflow-y:auto;margin-top:10px}
+  #all button{display:block;width:100%;margin:4px 0;text-align:left}
+</style>
+</head>
+<body><div id="wrap">
+  <h1>📡 Разбор по проектам</h1>
+  <div id="sub">задача про технический проект? отправь её в его инбокс · не проектная - едет дальше</div>
+  <div id="stage"></div>
+  <div id="cnt"></div>
+  <a href="/">← в прихожую склада</a>
+</div>
+<script>
+"use strict";
+const $=s=>document.querySelector(s);
+async function api(p,body){const r=await fetch(p,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});if(!r.ok)throw new Error((await r.json()).detail||r.status);return r.json()}
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
+const SHELF={focus:'🎯 фокус',rack:'🗄 стеллаж',pallet_step:'🧱 шаг проекта',waiting:'⏳ ожидание'};
+let items=[],projects=[],doneNow=0;
+async function load(){
+  const [d,tp]=await Promise.all([api('/route_triage'),api('/tech_projects')]);
+  items=d.items;projects=tp.projects||[];render();
+}
+function render(){
+  if(!items.length){
+    $('#stage').innerHTML=`<div class="muted">Всё распределено. ✨<br><br>
+      ${doneNow?`За этот проход отправлено в проекты: ${doneNow}.<br>`:''}
+      Новые коробки появятся здесь сами, как только родятся.</div>`;
+    $('#cnt').textContent='';return;
+  }
+  const b=items[0];
+  const ctx=b.context?` · ${esc(b.context)}`:'';
+  const cand=(b.candidates||[]).map((c,i)=>
+    `<button class="${i===0?'b-primary':'b-sec'}" onclick="send(${JSON.stringify(c).replace(/"/g,'&quot;')})">📁 ${esc(c.name)}</button>`).join('');
+  $('#stage').innerHTML=`<div class="card in">
+    <div class="meta">#${b.id} · ${SHELF[b.shelf]||esc(b.shelf)}${ctx} · родилась ${b.born_at.slice(0,10)}</div>
+    <div class="task">${esc(b.raw_text)}</div>
+    ${cand}
+    <button class="b-ghost" onclick="showAll()">📋 Другой проект…</button>
+    <button class="b-sec" onclick="notProject()">🚫 Не проектная</button>
+    <button class="b-ghost" title="пропустить, решу позже" onclick="skip()">⤵ позже</button>
+    <div id="all" style="display:none"></div>
+  </div>`;
+  $('#cnt').textContent=`осталось ${items.length}`;
+}
+function showAll(){
+  const el=$('#all');
+  if(el.style.display!=='none'){el.style.display='none';return}
+  el.innerHTML=projects.map(p=>
+    `<button class="b-ghost" onclick="send(${JSON.stringify(p).replace(/"/g,'&quot;')})">📁 ${esc(p.name)}</button>`).join('')||'<div class="meta">реестр проектов пуст</div>';
+  el.style.display='block';
+}
+async function send(proj){
+  const b=items[0];
+  try{
+    await api('/tech_route_confirm',{id:b.id,text:b.raw_text,project_name:proj.name,project_path:proj.path});
+  }catch(e){alert('не отправилось: '+e.message);return}
+  doneNow++;items.shift();render();
+}
+function notProject(){
+  const b=items.shift();
+  api('/route_skip',{id:b.id});
+  render();
+}
+function skip(){items.push(items.shift());render()}
+document.addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT'||!items.length)return;
+  const b=items[0],cand=b.candidates||[];
+  const n=parseInt(e.key,10);
+  if(n>=1&&n<=cand.length){send(cand[n-1]);return}
+  if(n===cand.length+1)showAll();
+  if(n===cand.length+2)notProject();
+  if(n===cand.length+3)skip();
+});
+load();
+</script>
+</body>
+</html>

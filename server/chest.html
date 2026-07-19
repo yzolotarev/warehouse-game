@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="/style.css">
+<script src="/theme.js"></script><script src="/i18n.js"></script><script src="/storozh.js"></script>
+<title>🏆 Сундук</title>
+<style>
+  html,body{margin:0;height:100%;display:flex;flex-direction:column;align-items:center;overflow:hidden}
+  #wrap{width:min(640px,94vw);padding:22px 0;height:100%;box-sizing:border-box;display:flex;flex-direction:column}
+  h1{margin:0}
+  #sub{color:var(--dim);font-size:13px;margin-bottom:18px}
+  .card{text-align:center}
+  .task{font-size:21px;line-height:1.4;margin:10px 0 16px}
+  .meta{font-size:12px;color:var(--dim)}
+  button{margin:0 6px}
+  .muted{color:var(--dim);text-align:center;padding:40px 0;font-size:15px}
+  .in{animation:inup .3s ease}
+  @keyframes inup{from{transform:translateY(16px);opacity:0}}
+  a{font-size:13px;text-decoration:none;margin-top:auto;text-align:center}
+  .item{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 18px;
+    margin-bottom:8px;display:flex;align-items:center;gap:12px}
+  .item.bought{opacity:.5}
+  .item .ti{font-size:15px;font-weight:500;flex:1}
+  .item .pr{color:var(--gold);font-size:14px;white-space:nowrap}
+  #new{display:flex;gap:8px;margin-bottom:14px;align-items:center;flex-wrap:wrap}
+  #new input{flex:1;min-width:120px}
+  #new input[type=number]{width:70px;flex:none}
+  #list{flex:1 1 auto;overflow-y:auto;min-height:0}
+</style>
+</head>
+<body><div id="wrap">
+  <h1>🏆 Сундук <span style="color:var(--dim);font-weight:normal">= на что копим ⭐</span></h1>
+  <div id="sub">заработал очки — потрать на награду</div>
+  <div id="ptsbar" style="text-align:center;font-size:18px;margin-bottom:16px;color:var(--gold)">⭐ <span id="pts">0</span></div>
+  <div id="new">
+    <input id="nt" placeholder="название награды">
+    <input id="nc" type="number" value="50" min="1" placeholder="⭐">
+    <button onclick="addChest()">➕ добавить</button>
+  </div>
+  <div id="list"></div>
+  <a href="/">← в прихожую склада</a>
+</div>
+<script>
+"use strict";
+const $=s=>document.querySelector(s);
+async function api(p,body){const r=await fetch(p,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});return r.json()}
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
+async function load(){
+  const d=await api('/chest');
+  $('#pts').textContent=d.points_total;
+  const avail=d.items.filter(x=>!x.bought_at),bought=d.items.filter(x=>x.bought_at);
+  let h='';
+  if(!avail.length&&!bought.length){h='<div class="muted">Сундук пуст. Добавь награду, на которую копишь очки.</div>'}
+  if(avail.length){
+    h+='<div class="meta" style="margin-bottom:8px">Доступно</div>';
+    for(const x of avail){
+      const ok=d.points_total>=x.cost;
+      h+=`<div class="item in">
+        <div class="ti">${esc(x.title)}</div>
+        <div class="pr">⭐ ${x.cost}</div>
+        <button class="${ok?'b-primary':'b-ghost'}" ${ok?`onclick="buy(${x.id})"`:'disabled'}">${ok?'Забрать':'⭐ не хватает'}</button>
+        <button class="b-ghost" style="font-size:11px;padding:4px 8px" onclick="del(${x.id})">✕</button>
+      </div>`;
+    }
+  }
+  if(bought.length){
+    h+='<div class="meta" style="margin:12px 0 8px">Куплено</div>';
+    for(const x of bought){
+      h+=`<div class="item bought">
+        <div class="ti">${esc(x.title)}</div>
+        <div class="pr" style="color:var(--dim)">⭐ ${x.cost}</div>
+        <span style="font-size:11px;color:var(--dim)">${(x.bought_at||'').slice(0,10)}</span>
+      </div>`;
+    }
+  }
+  $('#list').innerHTML=h;
+}
+async function addChest(){
+  const title=$('#nt').value.trim(),cost=parseInt($('#nc').value);
+  if(!title||cost<1)return;
+  await api('/chest_add',{title,cost});
+  $('#nt').value='';load();
+}
+async function buy(id){
+  const r=await fetch('/chest_buy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
+  if(!r.ok){const e=await r.json();alert(e.detail||'ошибка');return}
+  load();
+}
+async function del(id){
+  await api('/chest_delete',{id});
+  load();
+}
+load();
+</script>
+</body>
+</html>

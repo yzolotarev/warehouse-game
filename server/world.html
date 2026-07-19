@@ -38,6 +38,10 @@
     background:rgba(60,18,18,.92);border-color:#a04040;color:#ffd0d0;animation:pulse 1.2s infinite}
   #review{display:none;top:52px;left:50%;transform:translateX(-50%);pointer-events:auto;cursor:pointer;
     border-color:#6e6448;color:#ffd9a0;animation:pulse 1.6s infinite}
+  #wn{display:none;top:14px;left:50%;transform:translateX(-50%);pointer-events:auto;cursor:pointer}
+  #wn:hover{border-color:var(--amber)}
+  #wn .nx{color:var(--dim);font-size:11px}
+  body.day #wn{color:#8a5a00}
   #toast{display:none;bottom:60px;left:50%;transform:translateX(-50%);color:#ffd9a0}
   @keyframes pulse{50%{box-shadow:0 0 16px rgba(246,173,85,.35)}}
   #dayload{position:fixed;left:0;right:0;bottom:0;height:10px;background:rgba(255,255,255,.08);
@@ -76,7 +80,9 @@
   <div style="font-size:12px;color:#8a8a94;cursor:pointer" onclick="clearInterval(restTimer);document.getElementById('rest').style.display='none'">вернуться раньше (без очков)</div>
 </div>
 <div class="plaque" id="blocked">⛔ Склад стоит: приёмка не разобрана — жми сюда</div>
-<div class="plaque" id="review">🧰 Пора пересобрать склад (Week Review) · +25 →</div>
+<div class="plaque" id="wn" title="что сейчас — сделал одно, всплывёт следующее"><span id="wnAct"></span> <span class="nx" id="wnNext"></span></div>
+<div class="plaque" id="vac" style="display:none;border-color:#6e6448;color:#ffd9a0">🍺 Таверна: отпуск до <span id="vacD"></span></div>
+<div class="plaque" id="review">🧰 Пора пересобрать склад (General Review) · +25 →</div>
 <div class="plaque" id="tip"><span class="nm"></span> <span class="ct"></span><br><span class="sb"></span></div>
 <div class="plaque" id="toast"></div>
 <div class="plaque" id="foot">зов <span id="callT"></span> · фура <span id="truckT"></span> · ЛКМ тащить · колесо зум · R повернуть · I разбор</div>
@@ -178,13 +184,14 @@ function cardboard(gx,gy,lift,s,sq){ // sq = squash 0..1
 
 /* ================= данные (живые) ================= */
 let S={counts:{},blocked:false,points_total:0,review_due:false,call_at:'21:30',truck_at:'22:00'};
-let glowBoxes=[],pallets={pallets:[],frozen:[],unformed:[]},todayPts=0;
+let glowBoxes=[],pallets={pallets:[],frozen:[],unformed:[]},todayPts=0,WN=[];
 async function refresh(){
   try{
     S=await(await fetch('/state')).json();
     glowBoxes=await(await fetch('/glow')).json();
     pallets=await(await fetch('/pallets')).json();
     const m=await(await fetch('/mirror')).json();todayPts=m.points_total||0; // /mirror = очки за сегодня
+    WN=((await(await fetch('/whatnow')).json()).queue)||[];
   }catch(e){}
   document.getElementById('ptsN').textContent=S.points_total||0;
   document.getElementById('ptsD').textContent=todayPts||0;
@@ -192,6 +199,17 @@ async function refresh(){
   document.getElementById('truckT').textContent=S.truck_at;
   document.getElementById('blocked').style.display=S.blocked?'block':'none';
   document.getElementById('review').style.display=S.review_due?'block':'none';
+  // указатель «что сейчас»: fallback-очередь разборов; при стопоре его место
+  // занимает красная плашка ⛔ (первый пункт очереди - тот же разбор инбокса)
+  const w=WN[0];
+  document.getElementById('wn').style.display=(w&&!S.blocked)?'block':'none';
+  if(w){
+    document.getElementById('wnAct').textContent=w.act+(w.calm?'':' →');
+    const nx=WN.slice(1,2).filter(x=>!x.calm).map(x=>x.act).join('');
+    document.getElementById('wnNext').textContent=nx?' дальше: '+nx:'';
+  }
+  document.getElementById('vac').style.display=S.on_vacation?'block':'none';
+  if(S.on_vacation)document.getElementById('vacD').textContent=S.vacation_until;
   const st=S.stars||[];
   document.getElementById('star').style.display=st.length?'block':'none';
   document.getElementById('starT').textContent=st.map(s=>s.text).join(' · ');
@@ -632,6 +650,7 @@ addEventListener('keydown',e=>{
   if(e.key==='i'||e.key==='I'||e.key==='ш'||e.key==='Ш')location.href='/terminal';});
 document.getElementById('rotBtn').onclick=()=>{rot=(rot+1)%4;blip(300,.05)};
 document.getElementById('blocked').onclick=()=>location.href='/terminal';
+document.getElementById('wn').onclick=()=>{if(WN[0])location.href=WN[0].url};
 document.getElementById('review').onclick=()=>location.href='/review';
 document.getElementById('star').onclick=()=>location.href='/focus_page';
 document.getElementById('menu').onclick=()=>location.href='/hub';
