@@ -25,7 +25,7 @@
 </head>
 <body><div id="wrap">
   <h1>✂ Разбор фокуса</h1>
-  <div id="sub">проход 1: что может робот - уезжает к нему · проход 2: судьба остальных</div>
+  <div id="sub">проход 1: что может робот - уезжает к нему · проход 2: судьба остальных · Backspace = отменить</div>
   <div id="stage"></div>
   <div id="cnt"></div>
   <a href="/">← в прихожую склада</a>
@@ -36,7 +36,7 @@ const $=s=>document.querySelector(s);
 async function api(p,body){const r=await fetch(p,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});if(!r.ok)throw new Error((await r.json()).detail||r.status);return r.json()}
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
 const HOME={pallet_step:'🧱 обратно в проект',rack:'🗄 на стеллаж',waiting:'⏳ в ожидание'};
-let items=[],trimAt=5,keptN=0;
+let items=[],trimAt=5,keptN=0,hist=[];
 async function load(){
   const d=await api('/focus_triage');
   items=d.items;trimAt=d.trim_at;keptN=0;render();
@@ -76,24 +76,45 @@ async function tag(ok){
   const b=items.find(x=>x.ai_ok===null||x.ai_ok===undefined);
   try{await api('/robot_mark',{id:b.id,ok})}
   catch(e){alert('не отметилось: '+e.message);return}
+  hist.push({type:'tag',box:b,idx:items.indexOf(b)});
   if(ok)items.splice(items.indexOf(b),1); // «Робот» = уехала в ящик робота
   else b.ai_ok=0;
   if(!items.some(x=>x.ai_ok===null||x.ai_ok===undefined)&&window.juiceWin)
     juiceWin('Фокус протегирован!'); // проход 1 закрыт - переходим к судьбам
   render();
 }
-function keep(){keptN++;items.shift();render()}
+function keep(){hist.push({type:'keep',box:items[0]});keptN++;items.shift();render()}
 async function move(to){
   const b=items[0];
   try{await api('/move',{id:b.id,to})}
   catch(e){alert('не уехала: '+e.message);return}
+  hist.push({type:'move',box:b,to});
   items.shift();render();
 }
 function done(){move('done');window.juice&&juice('done')}
 function back(){move(items[0].origin)}
 function toTrash(){move('trash')}
+async function undo(){
+  const h=hist.pop();
+  if(!h)return;
+  try{
+    if(h.type==='tag'){
+      await api('/robot_unmark',{id:h.box.id});
+      h.box.ai_ok=null;
+      if(!items.includes(h.box))items.splice(Math.min(h.idx,items.length),0,h.box);
+    }else if(h.type==='keep'){
+      keptN--;items.unshift(h.box);
+    }else if(h.type==='move'){
+      await api('/move',{id:h.box.id,to:'focus'});
+      items.unshift(h.box);
+    }
+  }catch(e){hist.push(h);alert('откат не удался: '+e.message);return}
+  render();
+}
 document.addEventListener('keydown',e=>{
-  if(e.target.tagName==='INPUT'||!items.length)return;
+  if(e.target.tagName==='INPUT')return;
+  if(e.key==='Backspace'){e.preventDefault();undo();return}
+  if(!items.length)return;
   if(items.some(x=>x.ai_ok===null||x.ai_ok===undefined)){ // проход 1
     if(e.key==='1')tag(true);
     if(e.key==='2')tag(false);

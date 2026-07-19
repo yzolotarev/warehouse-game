@@ -185,7 +185,7 @@
 
     // ── разбор фокуса ──
     ["✂ Разбор фокуса", "✂ Focus trim"],
-    ["проход 1: разметить всё для робота · проход 2: судьба каждой коробки", "pass 1: tag everything for the robot · pass 2: each box's fate"],
+    ["проход 1: что может робот - уезжает к нему · проход 2: судьба остальных · Backspace = отменить", "pass 1: what the robot can do goes to it · pass 2: the rest's fate · Backspace = undo"],
     ["проход 1 · может ли это сделать ИИ? (осталось ", "pass 1 · can AI do this one? (left: "],
     ["проход 1 из 2 · потом судьба всех ", "pass 1 of 2 · then the fate of all "],
     ["✂ Проредить фокус (", "✂ Trim the focus ("],

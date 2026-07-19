@@ -1815,6 +1815,33 @@ def robot_mark(m: RobotMark):
     return {"ok": True}
 
 
+class RobotUnmark(BaseModel):
+    id: int
+
+
+@app.post("/robot_unmark")
+def robot_unmark(u: RobotUnmark):
+    """Откат разметки (Backspace на конвейере): ai_ok снова «не решено»;
+    из ящика робота коробка возвращается туда, откуда приехала."""
+    with db() as conn:
+        row = conn.execute("SELECT shelf FROM boxes WHERE id=?", (u.id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "нет такой коробки")
+        conn.execute("UPDATE boxes SET ai_ok=NULL, ai_note=NULL WHERE id=?", (u.id,))
+        if row["shelf"] == "robot":
+            back = conn.execute(
+                "SELECT from_shelf FROM moves WHERE box_id=? AND to_shelf='robot'"
+                " AND from_shelf IS NOT NULL ORDER BY id DESC LIMIT 1",
+                (u.id,)).fetchone()
+            to = back["from_shelf"] if back else "focus"
+            conn.execute("UPDATE boxes SET shelf=? WHERE id=?", (to, u.id))
+            conn.execute(
+                "INSERT INTO moves(box_id, from_shelf, to_shelf) VALUES(?, 'robot', ?)",
+                (u.id, to))
+        log_event(conn, "robot_unmark", id=u.id)
+    return {"ok": True}
+
+
 class RobotDone(BaseModel):
     id: int
     note: str
