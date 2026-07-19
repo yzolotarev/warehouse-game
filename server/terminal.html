@@ -50,6 +50,7 @@
   <div class="card" id="triage" style="display:none">
     <div id="boxmeta"></div>
     <div id="boxtext"></div>
+    <div id="boxtldr" style="display:none;font-size:13px;color:var(--vio);margin-top:6px"></div>
     <div id="question"></div>
     <div id="btns"></div>
     <div id="hint" style="margin-top:10px"></div>
@@ -271,6 +272,9 @@ function nextItem(){
   $('boxmeta').textContent=`проход ${pass+1}/${P.length} · #${cur.id} ${src} · в пачке ещё ${P[pass].items.length}`
     +(P[pass].items.length>1?' · ←→ листать':'');
   $('boxtext').textContent=cur.raw_text;
+  // 🤖 «короче»: LLM-выжимка длинной коробки (ai_tldr, приезжает фоном с захвата)
+  $('boxtldr').style.display=cur.ai_tldr?'block':'none';
+  $('boxtldr').textContent=cur.ai_tldr?'🤖 короче: '+cur.ai_tldr:'';
   $('question').textContent=P[pass].q;
   let hint=P[pass].hint||'';
   if(pass===4&&focusN>=5)hint+=` · ⚠ фокус уже полон (${focusN}/5) — честнее «не сейчас»`;

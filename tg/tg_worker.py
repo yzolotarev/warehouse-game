@@ -83,8 +83,9 @@ def tri_card(sess):
             continue
         p = max(0, min(len(PASSES) - 1, b.get("triage_pass") or 0))
         q, rows = PASSES[p]
+        tldr = f"\n🤖 короче: {b['ai_tldr']}\n" if b.get("ai_tldr") else ""
         text = (f"📦 #{b['id']} · проход {p + 1}/{len(PASSES)} · осталось {len(sess['ids'])}\n"
-                f"\n{b['raw_text']}\n\n❓ {q}")
+                f"\n{b['raw_text']}\n{tldr}\n❓ {q}")
         return text, kb(rows, b["id"])
     return f"Инбокс пуст. ✨ Разобрано за сессию: {sess['done']}", None
 

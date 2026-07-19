@@ -223,6 +223,10 @@ def init_db():
             conn.execute("ALTER TABLE boxes ADD COLUMN starred INTEGER NOT NULL DEFAULT 0")
         if "ai_suggest" not in cols:
             conn.execute("ALTER TABLE boxes ADD COLUMN ai_suggest TEXT")
+        if "ai_tldr" not in cols:
+            # авто-«короче» для длинных коробок: одна строка сути от LLM,
+            # видна под текстом на карточке триажа (#162, 19.07)
+            conn.execute("ALTER TABLE boxes ADD COLUMN ai_tldr TEXT")
         if "triage_pass" not in cols:
             # позиция в конвейере триажа (0-4) - переживает reload/undo, чтобы
             # промежуточные ответы ("Это дело?" и т.п.) не терялись при перезагрузке
@@ -399,6 +403,34 @@ def _ai_classify_box(box_id, text):
         print(f"[ai_classify] #{box_id} -> {kind}{' УЛИЦА' if street else ''}")
     except Exception as e:
         print(f"[ai_classify] #{box_id} exception: {e!r}")
+
+
+AI_TLDR_MIN_LEN = 220  # короче этого «короче» не нужно - текст и так одним взглядом
+
+
+def _ai_tldr_box(box_id, text):
+    """Авто-«короче» для длинной коробки (#162): одна строка сути под текстом
+    на карточке разбора. Fire-and-forget, как _ai_classify_box."""
+    try:
+        r = subprocess.run(
+            ["llm-brains", "--backend", "web2api", "--max-tokens", "60",
+             "--system",
+             "Сожми заметку личного таск-трекера в ОДНУ строку до 15 слов "
+             "простым языком: что за мысль/задача. Без вступлений и кавычек, "
+             "начни с сути.",
+             text],
+            capture_output=True, text=True, timeout=200)
+        if r.returncode != 0:
+            print(f"[ai_tldr] #{box_id} rc={r.returncode} stderr={r.stderr[:200]!r}")
+            return
+        tldr = " ".join(r.stdout.split()).strip()
+        if not tldr:
+            return
+        with db() as conn:
+            conn.execute("UPDATE boxes SET ai_tldr=? WHERE id=?", (tldr[:300], box_id))
+        print(f"[ai_tldr] #{box_id} -> {tldr[:80]!r}")
+    except Exception as e:
+        print(f"[ai_tldr] #{box_id} exception: {e!r}")
 
 
 # ─── Автоконтекстуализация стеллажа (перенос «сообщающихся сосудов» из Отложки) ──
@@ -695,6 +727,8 @@ def add_inbox(item: InboxItem):
             (box_id,))
         log_event(conn, "inbox_add", id=box_id, source=item.source, text=text)
     threading.Thread(target=_ai_classify_box, args=(box_id, text), daemon=True).start()
+    if len(text) >= AI_TLDR_MIN_LEN:
+        threading.Thread(target=_ai_tldr_box, args=(box_id, text), daemon=True).start()
     return {"id": box_id,
             "similar_trashed": {"id": similar["id"], "text": similar["raw_text"]} if similar else None}
 
