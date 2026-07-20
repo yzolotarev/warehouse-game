@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
+<link rel="icon" href="/assets/favicon.png">
 <meta charset="utf-8">
 <title>🏭 Склад</title>
 <style>
@@ -660,6 +661,8 @@ _wt.onclick=()=>{const cur=localStorage.whTheme||'auto';
   const next=cur==='auto'?'light':cur==='light'?'dark':'auto';
   localStorage.whTheme=next;_wt.textContent=_wticons[next];applyEnv();};
 applyEnv();setInterval(applyEnv,60000);addEventListener('storage',applyEnv);
+// прямой вход «отдых» из текстового меню (#42): сразу спросить длительность
+if(location.hash==='#rest')askRest();
 </script>
 </body>
 </html>

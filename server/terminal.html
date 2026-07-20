@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
+<link rel="icon" href="/assets/favicon.png">
 <meta charset="utf-8">
 <link rel="stylesheet" href="/style.css">
 <script src="/theme.js"></script><script src="/i18n.js"></script><script src="/storozh.js"></script><script src="/juice.js"></script>
@@ -152,7 +153,8 @@ function renderGlow(){
     btn.textContent=label;
     btn.onclick=async()=>{if(flying)return;flying=true;glowQ.shift();
       try{await api('/wait_check',{id:b.id,action})}
-      catch(e){glowQ.unshift(b)} // не приняло - товар вернётся на экран
+      catch(e){glowQ.unshift(b); // не приняло - товар вернётся на экран
+        $('hint').textContent='⛔ сервер не принял: '+(e&&e.message||e)}
       if(action==='focus')focusWarn(btn);
       beep(action==='done'?700:300,.12);window.juice&&juice('glow');flyNext()};
     $('btns').appendChild(btn);
@@ -212,7 +214,7 @@ function route(item,toPass){
   hist.push({type:'route',item,fromPass:pass,toPass});
   P[toPass].items.push(item);
   stageDone++; loadBar();
-  window.juice&&juice('triage');
+  window.juice&&juice('triage',stageTotal?stageDone/stageTotal:1);
   api('/triage_pass',{id:item.id,p:toPass}).catch(()=>{}); // персист - переживает reload
 }
 async function undo(){
@@ -368,7 +370,7 @@ async function ship(item,shelf,ctx,extra){
   beep(shelf==='trash'?180:560,.12);
   if(r.points>=10)beep(880,.3);
   if(shelf==='focus'){try{focusN=((await api('/state')).counts||{}).focus||0;focusWarn(focusN,document.querySelector('#btns button:first-child'))}catch(e){}}
-  window.juice&&juice('ship');
+  window.juice&&juice('ship',stageTotal?stageDone/stageTotal:1);
   loadMirror();
 }
 function askWait(item){

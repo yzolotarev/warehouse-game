@@ -935,8 +935,10 @@ def move_box(m: Move):
         if not row:
             raise HTTPException(404, "no such box")
         # Физический стопор: пока инбокс не разобран, двигаются только коробки
-        # ИЗ инбокса (разбор) и НА инбокс (откат решения)
-        if get_flag(conn, "blocked") and row["shelf"] != "inbox" and m.to != "inbox":
+        # ИЗ инбокса (разбор) и НА инбокс (откат решения).
+        # Ожидание - исключение: разбор загоревшегося glow это тоже разбор, а не
+        # работа в обход стопора; иначе кнопки glow-экрана молча умирают (#163)
+        if get_flag(conn, "blocked") and row["shelf"] not in ("inbox", "waiting") and m.to != "inbox":
             raise HTTPException(423, "склад стоит: сначала разбери инбокс")
         conn.execute(
             "UPDATE boxes SET shelf=?, context=COALESCE(?, context), grp=COALESCE(?, grp) WHERE id=?",
@@ -2104,6 +2106,9 @@ def whatnow():
         q.append({"act": f"🎯 Работать фокус ({counts['focus']})",
                   "why": "одна задача на экране — её и делай",
                   "url": "/focus_page"})
+    q.append({"act": "☕ Кофейня: пойти отдохнуть",
+              "why": "встань из-за стола — дожитый отдых даёт очки",
+              "url": "/world#rest", "calm": True})
     q.append({"act": "☕ Всё разобрано — отдых тоже работа",
               "why": "можно закинуть что-то во входящие или просто выдохнуть",
               "url": "/focus_page", "calm": True})

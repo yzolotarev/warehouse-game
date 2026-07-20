@@ -17,26 +17,38 @@
       g.gain.exponentialRampToValueAtTime(1e-4,acx.currentTime+.18);o.stop(acx.currentTime+.19);
     }catch(e){}
   }
-  function aura(){
-    const el=document.createElement('div');
-    const cs=getComputedStyle(document.documentElement);
-    const ok=cs.getPropertyValue('--ok').trim();
-    const hex=ok.replace('#','');
-    const r=parseInt(hex.substring(0,2),16);
-    const g=parseInt(hex.substring(2,4),16);
-    const b=parseInt(hex.substring(4,6),16);
-    el.style.cssText='position:fixed;inset:0;pointer-events:none;z-index:9998;'
-      +`background:radial-gradient(ellipse at center,transparent 50%,rgba(${r},${g},${b},.13) 100%);`
-      +'opacity:0;transition:opacity .3s ease;';
-    document.body.appendChild(el);
-    requestAnimationFrame(()=>{el.style.opacity='1';});
-    setTimeout(()=>{el.style.opacity='0';setTimeout(()=>el.remove(),350)},450);
+  // Боковой «удар» (#197): две вспышки по краям экрана. progress 0..1 красит их
+  // от янтарного (начало разбора) к зелёному (пачка почти прогружена) — цвет сам
+  // сообщает «сколько осталось», не отвлекая текстом.
+  function impact(progress){
+    let col;
+    if(typeof progress==='number'&&isFinite(progress)){
+      const p=Math.min(Math.max(progress,0),1);
+      col=`hsla(${Math.round(38+92*p)},85%,55%,`; // 38°=янтарь → 130°=зелень
+    }else{
+      const cs=getComputedStyle(document.documentElement);
+      const hex=cs.getPropertyValue('--ok').trim().replace('#','');
+      col=`rgba(${parseInt(hex.slice(0,2),16)},${parseInt(hex.slice(2,4),16)},${parseInt(hex.slice(4,6),16)},`;
+    }
+    [['left','90deg'],['right','270deg']].forEach(([side,dir])=>{
+      const el=document.createElement('div');
+      el.style.cssText=`position:fixed;top:0;bottom:0;${side}:0;width:14vw;max-width:120px;`
+        +`pointer-events:none;z-index:9998;background:linear-gradient(${dir},${col}.32) 0%,transparent 100%);`
+        +`opacity:0;transform:scaleX(.55);transform-origin:${side};`
+        +'transition:opacity .12s ease-out,transform .12s ease-out;';
+      document.body.appendChild(el);
+      requestAnimationFrame(()=>{el.style.opacity='1';el.style.transform='scaleX(1)'});
+      setTimeout(()=>{el.style.transition='opacity .38s ease,transform .38s ease';
+        el.style.opacity='0';el.style.transform='scaleX(.85)';
+        setTimeout(()=>el.remove(),420)},170);
+    });
   }
-  // juice(kind?) — дёргать на любом рутинном микродействии. kind пока не влияет.
+  // juice(kind?, progress?) — дёргать на любом рутинном микродействии.
+  // progress (0..1) = прогрузка текущей пачки разбора, красит боковой удар.
   // Возвращает управление мгновенно.
-  window.juice=function(kind){
-    if(Math.random()>=0.75)return;   // 25% намеренной тишины
-    tone();aura();
+  window.juice=function(kind,progress){
+    if(Math.random()<0.75)tone(); // 25% тишины держат «попадания» свежими
+    impact(progress);             // визуальный удар — всегда: он и есть прогресс-сигнал
   };
 
   // ── 🏆 Маленькая победа: тост снизу справа + короткая фанфара ──

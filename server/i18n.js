@@ -79,6 +79,8 @@
     ["решение принято ещё вчера — просто начни", "the decision was made yesterday — just start"],
     ["🎯 Работать фокус (", "🎯 Work focus ("],
     ["одна задача на экране — её и делай", "one task on screen — do that one"],
+    ["☕ Кофейня: пойти отдохнуть", "☕ Coffee shop: go take a rest"],
+    ["встань из-за стола — дожитый отдых даёт очки", "get up from the desk — a rest seen through earns points"],
     ["☕ Всё разобрано — отдых тоже работа", "☕ All clear — rest is work too"],
     ["можно закинуть что-то во входящие или просто выдохнуть", "drop something in the inbox or just breathe"],
     ["пора!", "time!"],
