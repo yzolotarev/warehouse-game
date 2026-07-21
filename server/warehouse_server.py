@@ -4569,6 +4569,20 @@ def focus_bonus():
     return {"ok": True, "amount": amount}
 
 
+@app.get("/block_wall")
+def block_wall():
+    """Для оверлей-демона (эмуляция Cold Turkey): активен ли блок и что показать.
+    active=True → демон рисует стену поверх браузера + глушит звук."""
+    # Случайные коробки НЕ показываем (могут всплыть тяжёлые/тревожные мысли на
+    # красной стене - вредно, у юзера F41.1). Только причина + спокойная фраза.
+    with db() as conn:
+        gate = _yt_gate(conn)
+    reason_ru = {"protected": "жёсткое расписание", "no_credit": "кредит кончился",
+                 "cooldown": "остывание", "penalty": "штраф за срыв"}.get(gate["reason"], "")
+    return {"active": gate["state"] == "blocked", "reason": gate["reason"],
+            "reason_ru": reason_ru, "until": gate.get("until")}
+
+
 class PinTask(BaseModel):
     text: str = ""
 
