@@ -4062,10 +4062,12 @@ def _audio_youtube():
     Смотрим sink-input'ы PulseAudio/PipeWire: у браузерных вкладок media.name -
     заголовок вкладки («… - YouTube»). Амбиенс склада отсекается сам: его
     media.name = заголовок страницы склада или имя локального файла, «youtube»
-    там не встречается. Corked (пауза) - не считается. Вернёт название или None."""
+    там не встречается. Corked (пауза) - не считается. Вернёт название или None.
+    LC_ALL=C - в рус. локали заголовок блока переведён, split по «Sink Input #» пуст."""
     try:
         out = subprocess.run(["pactl", "list", "sink-inputs"],
-                             capture_output=True, text=True, timeout=5)
+                             capture_output=True, text=True, timeout=5,
+                             env={**os.environ, "LC_ALL": "C"})
         if out.returncode != 0:
             return None
         for block in out.stdout.split("Sink Input #"):
@@ -4077,6 +4079,42 @@ def _audio_youtube():
     except Exception:
         pass
     return None
+
+
+def _yt_sink_inputs():
+    """ID звуковых потоков, где играет ютуб/твич (по media.name). Для глушения.
+    LC_ALL=C - иначе в рус. локали заголовок «Вход аудиоприёмника №N», не «Sink Input #»."""
+    ids = []
+    try:
+        out = subprocess.run(["pactl", "list", "sink-inputs"],
+                             capture_output=True, text=True, timeout=5,
+                             env={**os.environ, "LC_ALL": "C"})
+        if out.returncode != 0:
+            return ids
+        cur = None
+        for line in out.stdout.splitlines():
+            m = re.match(r"Sink Input #(\d+)", line)
+            if m:
+                cur = m.group(1)
+            elif cur and "media.name" in line:
+                mm = re.search(r'media\.name = "(.*)"', line)
+                if mm and AUDIO_MEDIA_RE.search(mm.group(1)):
+                    ids.append(cur)
+                    cur = None
+    except Exception:
+        pass
+    return ids
+
+
+def _mute_youtube(mute):
+    """Глушит/разглушает ютуб-звук при блоке (запрос юзера 21.07: оборвать бубнёж,
+    а не ждать конца вкладки). Бьёт только по ютуб-потокам - фон склада не трогает."""
+    for sid in _yt_sink_inputs():
+        try:
+            subprocess.run(["pactl", "set-sink-input-mute", sid, "1" if mute else "0"],
+                           timeout=5, check=False)
+        except Exception:
+            pass
 
 
 def _aw_current_window():
@@ -4151,8 +4189,11 @@ def focus_hosts_loop():
             _advance_cycle(6, watching, active)  # шаг = период цикла
             with db() as conn:
                 gate = _yt_gate(conn)
-            _focus_write_hosts(
-                _yt_block_domains(gate) if gate["state"] == "blocked" else [])
+            blocked = gate["state"] == "blocked"
+            _focus_write_hosts(_yt_block_domains(gate) if blocked else [])
+            # блок закрыл домены, но играющая вкладка доигрывает - глушим её звук
+            # (бубнёж = боль); блок снят → возвращаем звук
+            _mute_youtube(blocked)
             key = (gate["state"], gate["reason"])
             if key != last_state:
                 with db() as conn:
