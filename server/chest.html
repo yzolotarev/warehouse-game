@@ -4,7 +4,7 @@
 <link rel="icon" href="/assets/favicon.png">
 <meta charset="utf-8">
 <link rel="stylesheet" href="/style.css">
-<script src="/theme.js"></script><script src="/i18n.js"></script><script src="/storozh.js"></script>
+<script src="/theme.js"></script><script src="/welcome.js"></script><script src="/i18n.js"></script><script src="/storozh.js"></script><script src="/ambient.js"></script><script src="/juice.js"></script>
 <title>🏆 Сундук</title>
 <style>
   html,body{margin:0;height:100%;display:flex;flex-direction:column;align-items:center;overflow:hidden}
@@ -39,6 +39,25 @@
     <input id="nc" type="number" value="50" min="1" placeholder="⭐">
     <button onclick="addChest()">➕ добавить</button>
   </div>
+  <!-- 📦 Ящик: случайность в том, ЧТО выпало, а не выпало ли. Пустышек нет,
+       один ящик в сутки, платного ускорения открытия нет -->
+  <div id="roll" style="border:1px solid var(--gold);border-radius:10px;padding:14px 18px;margin-bottom:14px">
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <div style="flex:1;min-width:180px">
+        <div style="font-size:15px;font-weight:500">📦 Ящик <span class="meta">— один в день</span></div>
+        <div class="meta" id="rollInfo"></div>
+      </div>
+      <button id="rollBtn" class="b-primary" onclick="roll()">🎲 Крутить ящик</button>
+    </div>
+    <div id="pool" style="margin-top:12px"></div>
+    <div style="display:flex;gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap">
+      <input id="pt" placeholder="награда в пул розыгрыша" style="flex:1;min-width:140px">
+      <select id="pr" title="редкость: чем выше, тем чаще выпадает">
+        <option value="3">частая</option><option value="2" selected>обычная</option><option value="1">редкая</option>
+      </select>
+      <button class="b-ghost" onclick="addPool()">➕ в пул</button>
+    </div>
+  </div>
   <div id="list"></div>
   <a href="/">← в прихожую склада</a>
 </div>
@@ -47,10 +66,68 @@
 const $=s=>document.querySelector(s);
 async function api(p,body){const r=await fetch(p,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});return r.json()}
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
+const RARITY={3:'частая',2:'обычная',1:'редкая'};
+let prizeTimer=null;
+function renderRoll(d){
+  const pool=d.items.filter(x=>x.kind==='pool');
+  const prize=d.items.filter(x=>x.kind==='prize'&&!x.bought_at)[0];
+  $('#pool').innerHTML=pool.length
+    ?pool.map(x=>`<div class="item" style="padding:8px 12px;margin-bottom:5px">
+        <div class="ti" style="font-size:13px">${esc(x.title)}</div>
+        <div class="meta">${RARITY[x.rarity]||'обычная'}</div>
+        <button class="b-ghost" style="font-size:11px;padding:4px 8px" onclick="del(${x.id})">✕</button>
+      </div>`).join('')
+    :'<div class="meta">пул пуст — добавь минимум 3 награды, иначе розыгрыш не запустится</div>';
+  const btn=$('#rollBtn');
+  if(prizeTimer){clearInterval(prizeTimer);prizeTimer=null}
+  if(prize){
+    btn.textContent='📦 Открыть ящик';btn.onclick=openPrize;
+    const tick=()=>{
+      const left=Math.ceil((new Date(prize.opens_at.replace(' ','T'))-new Date())/1000);
+      if(left>0){
+        btn.disabled=true;
+        $('#rollInfo').textContent='ящик в пути · откроется через '
+          +Math.floor(left/60)+':'+String(left%60).padStart(2,'0');
+      }else{btn.disabled=false;$('#rollInfo').textContent='ящик приехал — открывай';
+            clearInterval(prizeTimer);prizeTimer=null}
+    };
+    tick();prizeTimer=setInterval(tick,1000);
+  }else{
+    btn.textContent='🎲 Крутить ящик';btn.onclick=roll;
+    const cost=d.roll_cost||40;
+    btn.disabled=pool.length<3||d.points_total<cost||d.rolled_today;
+    $('#rollInfo').textContent=
+      d.rolled_today?'сегодняшний ящик уже открыт — следующий завтра'
+      :pool.length<3?'нужно ещё '+(3-pool.length)+' наград(ы) в пуле'
+      :cost+' ⭐ · выпадет одна из '+pool.length+' твоих наград, откроется через '
+        +(d.roll_delay_min||45)+' минут';
+  }
+}
+async function roll(){
+  const r=await fetch('/chest_roll',{method:'POST'});
+  if(!r.ok){const e=await r.json();alert(e.detail||'ошибка');return}
+  window.juice&&juice('roll');
+  load();
+}
+async function openPrize(){
+  const r=await fetch('/chest_open',{method:'POST'});
+  if(!r.ok){const e=await r.json();alert(e.detail||'ошибка');return}
+  const d=await r.json();
+  window.juiceWin&&juiceWin(d.title);
+  load();
+}
+async function addPool(){
+  const title=$('#pt').value.trim();
+  if(!title)return;
+  await api('/chest_add',{title,cost:0,kind:'pool',rarity:parseInt($('#pr').value)});
+  $('#pt').value='';load();
+}
 async function load(){
   const d=await api('/chest');
   $('#pts').textContent=d.points_total;
-  const avail=d.items.filter(x=>!x.bought_at),bought=d.items.filter(x=>x.bought_at);
+  renderRoll(d);
+  const shop=d.items.filter(x=>x.kind!=='pool'&&x.kind!=='prize');
+  const avail=shop.filter(x=>!x.bought_at),bought=shop.filter(x=>x.bought_at);
   let h='';
   if(!avail.length&&!bought.length){h='<div class="muted">Сундук пуст. Добавь награду, на которую копишь очки.</div>'}
   if(avail.length){
@@ -60,7 +137,7 @@ async function load(){
       h+=`<div class="item in">
         <div class="ti">${esc(x.title)}</div>
         <div class="pr">⭐ ${x.cost}</div>
-        <button class="${ok?'b-primary':'b-ghost'}" ${ok?`onclick="buy(${x.id})"`:'disabled'}">${ok?'Забрать':'⭐ не хватает'}</button>
+        <button class="${ok?'b-primary':'b-ghost'}" ${ok?`onclick="buy(${x.id})"`:'disabled'}>${ok?'Забрать':'⭐ не хватает'}</button>
         <button class="b-ghost" style="font-size:11px;padding:4px 8px" onclick="del(${x.id})">✕</button>
       </div>`;
     }

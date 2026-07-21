@@ -4,7 +4,7 @@
 <link rel="icon" href="/assets/favicon.png">
 <meta charset="utf-8">
 <link rel="stylesheet" href="/style.css">
-<script src="/theme.js"></script><script src="/i18n.js"></script><script src="/storozh.js"></script><script src="/juice.js"></script>
+<script src="/theme.js"></script><script src="/welcome.js"></script><script src="/i18n.js"></script><script src="/storozh.js"></script><script src="/ambient.js"></script><script src="/juice.js"></script>
 <title>📦 Терминал склада</title>
 <style>
   html,body{margin:0;min-height:100%;display:flex;flex-direction:column;align-items:center}
@@ -27,6 +27,14 @@
   #ptsbar{font-size:15px;color:var(--accent)}
   #donebar{margin-top:6px;color:var(--dim);font-size:13px}
   #empty{font-size:19px;text-align:center;padding:40px 0}
+  /* Песочные часы коробки: полоска утекает за BOX_SEC. Намеренно БЕЗ цифр -
+     картинка читается боковым зрением за один взгляд, цифра требует чтения
+     и сама по себе тормозит. Истекла - ничего не происходит: это подгонялка,
+     а не наказание (наказание за медленность убило бы разбор совсем). */
+  #boxtimer{height:6px;border-radius:3px;background:var(--line);overflow:hidden;margin:0 0 10px}
+  #boxtimer > i{display:block;height:100%;width:100%;background:var(--ok)}
+  #boxtimer.run > i{width:0;background:var(--danger);
+    transition:width var(--boxsec) linear,background-color var(--boxsec) linear}
   .fly{animation:fly .45s ease forwards}
   @keyframes fly{to{transform:translateX(120%) rotate(6deg);opacity:0}}
   #blocked{display:none;background:var(--danger-soft);border:1px solid var(--danger);color:var(--danger);
@@ -49,9 +57,11 @@
   </div>
 
   <div class="card" id="triage" style="display:none">
+    <div id="boxtimer" title="время на решение по этой коробке"><i></i></div>
     <div id="boxmeta"></div>
+    <!-- #306: «короче» СВЕРХУ, оригинал под ним - при длинной коробке глаз сразу на выжимку -->
+    <div id="boxtldr" style="display:none;font-size:13px;color:var(--vio);margin-bottom:6px"></div>
     <div id="boxtext"></div>
-    <div id="boxtldr" style="display:none;font-size:13px;color:var(--vio);margin-top:6px"></div>
     <div id="question"></div>
     <div id="btns"></div>
     <div id="hint" style="margin-top:10px"></div>
@@ -191,14 +201,17 @@ async function loadQueue(){
 const PASSES=[
   {q:'Это дело?',hint:'дело = требует от тебя действия (проект — тоже дело) · мысль, ссылка, шум — не дело',
    a:[['✅ Дело',x=>route(x,1)],['🚫 Не дело',x=>route(x,2)]]},
+  // ЗАМОРОЖЕНО 21.07 (#283/#304): проход «техпроект?» выключен - «Один шаг» едет
+  // сразу на проход 4 (робот откидывает задачи, батчинг не пошёл). Разморозка: route(x,3)
   {q:'Это один конкретный шаг?',hint:'один шаг = сел и сделал · проект = нескольких шагов или пока мутно → уедет в Проекты, там разложишь',
-   a:[['⚡ Один шаг',x=>route(x,3)],['🧱 Проект',x=>ship(x,'pallet_step')]]},
+   a:[['⚡ Один шаг',x=>route(x,4)],['🧱 Проект',x=>ship(x,'pallet_step')]]},
   {q:'Оставить как мысль?',hint:'мысль → сама станет заметкой в Obsidian · мусор исчезает навсегда',
    a:[['💭 Мысль',x=>ship(x,'mind')],['🗑 Мусор',x=>ship(x,'trash')]]},
   {q:'Это для технического проекта?',hint:'техпроект = отдельный репозиторий с кодом (сайт, бот, api) · если да — шаг уедет в инбокс проекта',
    a:[['🤖 Да, техпроект',x=>{techRoute();return false}],['🚫 Нет',x=>route(x,4)]]},
-  {q:'Займёшься на этой неделе?',hint:'да → Фокус (делаю сейчас) · не сейчас → Отложенное: 🤖 сам разложит по контекстам',
-   a:[['✅ Да',x=>ship(x,'focus')],['🕰 Не сейчас',x=>ship(x,'rack')]]}
+  {q:'Займёшься на этой неделе?',hint:'да → Фокус (делаю сейчас) · не сейчас → Отложенное: 🤖 сам разложит по контекстам · страшно → спросим про два первых шага',
+   a:[['✅ Да',x=>ship(x,'focus')],['🕰 Не сейчас',x=>ship(x,'rack')],
+      ['😰 Страшно',x=>{scaryStep();return false}]]}
 ];
 // авто-триаж: какой ответ на ТЕКУЩЕМ вопросе подсказывает фоновая LLM-классификация
 // (cur.ai_suggest = step|project|thought|trash, проставляется сервером асинхронно после захвата)
@@ -213,6 +226,7 @@ let hist=[];
 function route(item,toPass){
   hist.push({type:'route',item,fromPass:pass,toPass});
   P[toPass].items.push(item);
+  noteDecision();
   stageDone++; loadBar();
   window.juice&&juice('triage',stageTotal?stageDone/stageTotal:1);
   api('/triage_pass',{id:item.id,p:toPass}).catch(()=>{}); // персист - переживает reload
@@ -246,7 +260,8 @@ function startPasses(items){
   // товары распределяются по СОХРАНЁННОЙ позиции в конвейере (triage_pass с сервера),
   // а не всегда с прохода 0 - иначе reload посреди разбора стирает уже данные ответы
   items.forEach(it=>{
-    const p=Math.min(Math.max(it.triage_pass||0,0),PASSES.length-1);
+    let p=Math.min(Math.max(it.triage_pass||0,0),PASSES.length-1);
+    if(p===3)p=4; // техпроект заморожен (#283): сохранённые на проходе 3 едут дальше
     P[p].items.push(it);
   });
   pass=0; hist=[]; stagePass=-1;
@@ -278,6 +293,7 @@ function nextItem(){
   $('boxtldr').style.display=cur.ai_tldr?'block':'none';
   $('boxtldr').textContent=cur.ai_tldr?'🤖 короче: '+cur.ai_tldr:'';
   $('question').textContent=P[pass].q;
+  startBoxTimer();
   let hint=P[pass].hint||'';
   if(pass===4&&focusN>=5)hint+=` · ⚠ фокус уже полон (${focusN}/5) — честнее «не сейчас»`;
   if(cur.loop_count>=2)hint+=` · 🔁 уже ${cur.loop_count}× возвращал(а) в инбокс — реши сейчас, не откручивай снова`;
@@ -309,6 +325,48 @@ function nextItem(){
       ship(cur,shelf);flyNext()};
     $('btns').appendChild(b);
   });
+}
+// Сколько времени даётся на коробку. 8с - потолок «решения на инстинкте»:
+// первый ответ приходит за 2-3с, дальше идёт не думание, а колебание.
+// ── Адаптивный темп ──
+// Полоска подстраивается под то, как человек РЕАЛЬНО разбирает сейчас: разогнался -
+// окно поджимается, тормозит - отпускает. Это геймификация, а не хронометраж, поэтому:
+//  · подстройка мягкая (ADAPT=.25 - четверть пути к цели за коробку), чтобы одна
+//    задумчивая коробка не сорвала темп, а одна быстрая не устроила гонку;
+//  · окно жёстко зажато BOX_MIN..BOX_MAX - иначе оно уползает либо в невозможные 2с,
+//    либо в бессмысленные полминуты, и полоска перестаёт что-либо значить;
+//  · цель = средний темп × 1.35 - полоска должна дышать чуть просторнее привычного
+//    темпа, иначе она вечно горит красным и превращается в фон;
+//  · >25с не учитываем: это не «медленно думал», а отошёл от компьютера.
+const BOX_START=8, BOX_MIN=5, BOX_MAX=14, ADAPT=.25, PACE_N=5;
+let boxSec=BOX_START, boxStart=0, paceLog=[];
+// Награда меряется не абсолютными секундами, а тем, обогнал ли ты СВОЁ текущее окно:
+// иначе медленный разборщик не получил бы крупных чисел никогда и забил бы на них.
+// Чем меньше доля окна, тем жирнее число; крит (уложился в четверть) — золотой.
+function awardXP(elapsed){
+  const ratio=elapsed?Math.min(elapsed/boxSec,1):.6; // время неизвестно - средняя награда
+  let xp=5+Math.round(45*Math.pow(1-ratio,1.4));
+  if(ratio<=.25)xp=Math.round(xp*1.6);              // крит за молниеносное решение
+  xp+=Math.floor(Math.random()*5);                  // рваность: числа не должны быть тарифом
+  window.juiceXP&&juiceXP(xp,$('triage'));
+}
+function noteDecision(){
+  if(!boxStart){awardXP(0);return}
+  const el=(Date.now()-boxStart)/1000; boxStart=0;
+  awardXP(el);
+  if(el>25)return;                  // отошёл - не темп
+  paceLog.push(el); if(paceLog.length>PACE_N)paceLog.shift();
+  const avg=paceLog.reduce((a,b)=>a+b,0)/paceLog.length;
+  const target=Math.min(Math.max(avg*1.35,BOX_MIN),BOX_MAX);
+  boxSec+=(target-boxSec)*ADAPT;
+}
+function startBoxTimer(){
+  const el=$('boxtimer');if(!el)return;
+  boxStart=Date.now();
+  el.classList.remove('run');       // сброс: снять transition, вернуть полную полосу
+  el.style.setProperty('--boxsec',boxSec.toFixed(2)+'s');
+  void el.offsetWidth;              // reflow - иначе браузер склеит сброс и старт в один кадр
+  el.classList.add('run');
 }
 function flyNext(){
   $('triage').classList.add('fly');
@@ -353,6 +411,7 @@ async function streetCur(){
 }
 async function ship(item,shelf,ctx,extra){
   const fromPass=pass;
+  noteDecision();
   hist.push({type:'ship',item,fromPass});
   let r;
   try{r=await api('/move',{id:item.id,to:shelf,context:ctx||null,...(extra||{})})}
@@ -452,6 +511,32 @@ async function techRouteConfirm(proj){
     flying=false;
     $('hint').textContent='⚠ не отправилось ('+e.message+')';
   }
+}
+// 😰 Страшная задача: единственный рычаг при низкой мотивации - способность.
+// Спрашиваем не «когда сделаешь», а «что тут можно сделать за две минуты».
+function scaryStep(){
+  if(!cur)return;
+  resetMore();
+  $('question').textContent='Что можно сделать за 2 минуты, чтобы это сдвинулось?';
+  $('hint').textContent='не решить целиком - только первый крошечный шаг: открыть, найти номер, написать одну строку';
+  $('btns').innerHTML='<input id="micro" style="flex:1;min-width:260px;padding:10px 12px;font-size:15px" '
+    +'placeholder="например: открыть телеграм и найти чат"><button onclick="scaryConfirm()">▶ Так и запишем</button>'
+    +'<button class="b-ghost" onclick="nextItem()">← Отмена</button>';
+  const inp=$('micro');
+  inp.focus();
+  inp.onkeydown=e=>{if(e.key==='Enter')scaryConfirm()};
+}
+async function scaryConfirm(){
+  if(flying)return;
+  const v=$('micro').value.trim();
+  if(!v){$('micro').focus();return}
+  flying=true;
+  try{
+    await api('/micro_set',{id:cur.id,text:v});
+    logEv('scary_micro',{box:cur.id,text:cur.raw_text,micro:v});
+    beep(620,.12);window.juice&&juice('ship');
+    P[pass].items.shift();flyNext();
+  }catch(e){flying=false;$('hint').textContent='⚠ не сохранилось ('+e.message+')'}
 }
 function addBtn(label,onclick){
   const b=document.createElement('button');

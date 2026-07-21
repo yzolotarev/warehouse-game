@@ -4,7 +4,7 @@
 <link rel="icon" href="/assets/favicon.png">
 <meta charset="utf-8">
 <link rel="stylesheet" href="/style.css">
-<script src="/theme.js"></script><script src="/i18n.js"></script><script src="/storozh.js"></script>
+<script src="/theme.js"></script><script src="/welcome.js"></script><script src="/i18n.js"></script><script src="/storozh.js"></script><script src="/ambient.js"></script><script src="/juice.js"></script>
 <title>📋 Склад — меню</title>
 <style>
   html,body{margin:0;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;overflow:hidden}
@@ -21,9 +21,13 @@
   #now .why{font-size:12.5px;color:var(--dim);margin-top:5px}
   #now.calm{border-color:var(--line)}
   #now.calm .lbl{color:var(--dim)}
-  #star{display:none;font-size:13px;color:var(--gold);margin:0 0 10px;padding:0 4px;cursor:pointer}
-  #duo{display:flex;gap:8px;margin-bottom:8px}
-  #duo .row{flex:1;margin-bottom:0}
+  /* звезда - ярлык-напоминание, а не чтение: одна приглушённая строка.
+     Полный текст и так открывается по клику, на Фокусе */
+  #star{display:none;font-size:12.5px;color:var(--dim);margin:0 0 10px;padding:0 4px;cursor:pointer;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #star:hover{color:var(--gold)}
+  #duo{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px}
+  #duo .row{margin-bottom:0}
   .row{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:11px 16px;
     margin-bottom:8px;cursor:pointer;display:flex;align-items:center;gap:12px;transition:border-color .15s;box-shadow:var(--card-shadow)}
   .row:hover{border-color:var(--accent)}
@@ -43,20 +47,47 @@
   #foot a:hover{color:var(--txt)}
   #blocked{display:none;margin:0 0 10px;background:var(--danger-soft);border:1px solid var(--danger);color:var(--danger);
     padding:9px 14px;border-radius:9px;font-size:13px;cursor:pointer}
+  #focusMode{border-color:var(--accent)}
+  #focusMode .ico{color:var(--accent)}
+  #focusMode.active{background:var(--accent);color:#fff}
+  #focusMode.active .flav,#focusMode.active .ico{color:#fff}
+  /* 🔥 Серия живёт в шапке рядом с очками: одна строка цифр на весь экран.
+     Страховка стоит вплотную к числу - тревога берётся из ощущения хрупкости,
+     а не из счётчика, поэтому «чем прикрыт» видно там же, где «сколько» */
+  #streak{display:none}
+  #streakBroke{display:none;margin:0 0 10px;padding:0 4px;font-size:12px;color:var(--dim)}
+  #streakBroke a{color:var(--dim);text-decoration:underline;cursor:pointer}
+  /* Зейгарник: незавершённое надо видеть - но одной волосяной линией внутри
+     главной кнопки, а не тремя шкалами поперёк экрана. Полоску на 0% не рисуем */
+  #nowBar{display:none;height:3px;background:var(--line);border-radius:2px;margin-top:14px;overflow:hidden}
+  #nowBar i{display:block;height:100%;background:var(--accent);border-radius:2px;transition:width .4s}
+  #bars{display:flex;flex-direction:column;gap:6px;margin:8px 0 0}
+  .bar{display:none;font-size:11px;color:var(--dim)}
+  .bar .t{display:flex;justify-content:space-between;margin-bottom:3px}
+  .bar .track{height:4px;background:var(--line);border-radius:2px;overflow:hidden}
+  .bar .fill{height:100%;background:var(--accent);border-radius:2px;transition:width .4s}
+  #prize{display:none;margin:0 0 10px;padding:0 4px;font-size:12.5px;color:var(--gold);cursor:pointer}
+  #tip{display:none;margin:10px 0 0;padding:0 4px;font-size:11.5px;color:var(--dim);line-height:1.5}
+  #tip b{cursor:pointer;color:var(--txt);float:right;margin-left:10px}
 </style>
 </head>
-<body><div id="wrap">
-  <h1>📋 Меню склада <small><span id="pts">0</span> ⭐ всего · сегодня +<span id="ptsD">0</span> · <span id="yt" title="перекус-кредит: минуты ютуба, заработанные шагами">🎬 0м</span></small></h1>
+<body>
+<div id="wrap">
+  <h1>📋 Меню склада <small><span id="pts">0</span> ⭐ <span id="ptsD"></span><span id="streakH"></span> · <span id="yt" title="перекус-кредит: минуты ютуба, заработанные шагами">🎬 0м</span></small></h1>
 
   <div id="now" onclick="go(NOW.url)">
     <div class="lbl">▶ Разбирать</div>
     <div class="act" id="nowAct">…</div>
     <div class="why" id="nowWhy"></div>
+    <div id="nowBar"><i></i></div>
   </div>
   <div id="blocked" onclick="go('/terminal')">⛔ Склад стоит: входящие не разобраны — работа не двигается, пока не разберёшь</div>
   <div id="vac" style="display:none;margin:0 0 10px;background:var(--accent-soft);border:1px solid var(--accent);color:var(--accent);
     padding:9px 14px;border-radius:9px;font-size:13px;cursor:pointer" onclick="go('/vacation')">🍺 Таверна: отпуск до <span id="vacD"></span></div>
-  <div id="star" onclick="go('/focus_page')">★ звезда дня: <span id="starT"></span></div>
+  <!-- счётчик отдельным узлом: #starT исключён из перевода, там текст задач -->
+  <div id="star" onclick="go('/focus_page')">★ <span id="starN"></span><span id="starT"></span></div>
+  <div id="streakBroke">серия сброшена — начинаем заново, было <span id="brokeN"></span> 🔥 · <a onclick="repairStreak()">простить пропуск</a></div>
+  <div id="prize" onclick="openPrize()"></div>
 
   <div id="duo">
     <div class="row" onclick="go('/pallets_page')">
@@ -65,10 +96,20 @@
     <div class="row" onclick="go('/racks_page')">
       <div class="ico">🗄</div><div><div class="name">Отложка</div><div class="flav">разбор отложки</div></div><div class="n" id="n-rack"></div>
     </div>
+    <div class="row" onclick="go('/focus_page')">
+      <div class="ico">🎯</div><div><div class="name">Фокус</div><div class="flav">делаю сейчас</div></div><div class="n" id="n-focus2"></div>
+    </div>
+    <div class="row" id="focusMode" onclick="go('/focus_mode')">
+      <div class="ico">🔒</div><div><div class="name">Изоляция</div><div class="flav" id="focusFlav">челлендж по минутам</div></div>
+    </div>
   </div>
 
   <details id="more">
     <summary>▾ все полки и разборы</summary>
+    <div id="bars">
+      <div class="bar" id="bar-focus"><div class="t"><span>шаги за сегодня</span><span class="v"></span></div><div class="track"><div class="fill"></div></div></div>
+      <div class="bar" id="bar-streak"><div class="t"><span>до страховки серии</span><span class="v"></span></div><div class="track"><div class="fill"></div></div></div>
+    </div>
     <div class="row" id="r-inbox" onclick="go('/terminal')">
       <div class="ico">📥</div><div><div class="name">Входящие — разбор</div><div class="flav">приёмка · всё, что ты записал</div></div><div class="n" id="n-inbox"></div>
     </div>
@@ -104,6 +145,8 @@
     </div>
   </details>
 
+  <div id="tip"><b onclick="hideTip()">×</b><span id="tipT"></span></div>
+
   <div id="foot">
     <a onclick="go('/#world')">🏭 мир — вайб-режим</a>
     <span>вечерний зов в <span id="call">21:30</span></span>
@@ -122,42 +165,132 @@ function renderStart(){
   document.getElementById('startTgl').textContent=
     localStorage.whStart==='world'?'сделать меню стартовым':'старт: меню ✓';
 }
+const set=(id,v)=>document.getElementById(id).textContent=v||'';
+
+// Fogg: способность. Кнопка не имеет права висеть в «…» — рисуем прошлую
+// рекомендацию из кэша сразу, свежая перезапишет её через миг.
+function paintNow(q){
+  NOW=q[0]||NOW;
+  set('nowAct',NOW.act);
+  set('nowWhy',NOW.why||'');
+  // «что дальше» больше не спорит с призывом за внимание - уходит в подсказку
+  // при наведении: третье сообщение внутри главной кнопки её же и размывало
+  const next=q.slice(1,3).filter(x=>!x.calm).map(x=>x.act).join(' · ');
+  document.getElementById('now').title=next?'дальше: '+next:'';
+  document.getElementById('now').classList.toggle('calm',!!NOW.calm);
+}
+try{const c=JSON.parse(localStorage.whLastNow||'null');if(c&&c.length)paintNow(c)}catch(e){}
+
+function bar(id,d){
+  const el=document.getElementById(id);
+  if(!d||!d.total||!d.done){el.style.display='none';return}  // 0% не показываем
+  const pct=Math.min(100,Math.round(100*d.done/d.total));
+  el.style.display='block';
+  el.querySelector('.v').textContent=d.done+' из '+d.total;
+  el.querySelector('.fill').style.width=pct+'%';
+  return pct;
+}
+function renderStreak(s){
+  // серия теперь часть строки статистики в шапке, отдельного блока нет
+  const h=document.getElementById('streakH');
+  h.textContent=s.show?' · 🔥'+s.days+(s.freezes?' 🛡'+s.freezes:''):'';
+  const RU={active:'был',freeze:'страховка',vacation:'отпуск',repair:'прощён',miss:'пропуск'};
+  h.title=s.show?(s.dots||[]).map(d=>d.day.slice(5)+' '+(RU[d.kind]||d.kind)).join('\n'):'';
+  const b=document.getElementById('streakBroke');
+  b.style.display=s.broken_had?'block':'none';
+  set('brokeN',s.broken_had||'');
+  if(!s.can_repair)b.querySelector('a').style.display='none';
+}
+async function repairStreak(){
+  await fetch('/streak_repair',{method:'POST'});
+  load();
+}
+function renderPrize(p){
+  const el=document.getElementById('prize');
+  if(!p){el.style.display='none';return}
+  const left=Math.ceil((new Date(p.opens_at.replace(' ','T'))-new Date())/60000);
+  el.style.display='block';
+  el.textContent=left>0?'📦 Ящик приедет через '+left+' мин':'📦 Открыть ящик';
+  el.style.textDecoration=left>0?'none':'underline';
+  el.dataset.ready=left>0?'':'1';
+}
+async function openPrize(){
+  if(!document.getElementById('prize').dataset.ready)return;
+  const r=await fetch('/chest_open',{method:'POST'});
+  if(r.ok){const d=await r.json();if(window.juiceWin)juiceWin(d.title);}
+  load();
+}
+function renderTip(tips){
+  const el=document.getElementById('tip');
+  const k=(tips||[])[0];
+  if(!k){el.style.display='none';return}
+  el.style.display='block';el.dataset.key=k;
+  set('tipT',TIPS[k]||'');
+}
+const TIPS={
+  streak:'🔥 Появилась серия дней. Любое движение коробки засчитывает день. Каждые 7 дней копится страховка — пропуск закроется сам.',
+  micro:'😰 У страшной задачи теперь есть кнопка «2 минуты»: очко даётся за начало, а не за завершение. Бросить через две минуты — тоже победа.',
+  recognize:'👁 Коробка, которую ты видишь второй раз, показывает счётчик заходов и две быстрые кнопки: «уже неактуально» и «я знаю решение».',
+  roll:'📦 В сундуке появился ящик: крутишь раз в день, выпадает случайная награда из твоего же пула, открыть можно через 45 минут.'
+};
+async function hideTip(){
+  const k=document.getElementById('tip').dataset.key;
+  document.getElementById('tip').style.display='none';
+  await fetch('/seen',{method:'POST',headers:{'content-type':'application/json'},
+                       body:JSON.stringify({key:k})});
+}
 async function load(){
-  const st=await (await fetch('/state')).json();
-  const glow=await (await fetch('/glow')).json();
-  const wn=await (await fetch('/whatnow')).json();
-  const m=await (await fetch('/mirror')).json();
-  const pal=await (await fetch('/pallets')).json();
-  const yt=await (await fetch('/yt')).json();
+  const st=await (await fetch('/hub_summary')).json();
   const c=st.counts||{};
-  const set=(id,v)=>document.getElementById(id).textContent=v||'';
-  set('n-inbox',c.inbox); set('n-focus',c.focus);
-  set('n-pallet',(pal.pallets||[]).length+(pal.unformed||[]).length||'');
-  set('n-wait',glow.length?c.waiting+' · ✨'+glow.length:c.waiting);
-  set('n-rack',c.rack); set('n-done',c.done); set('n-mind',c.mind);
+  const glowN=(st.queue||[]).some(x=>x.act.startsWith('✨'))?1:0;
+  set('n-inbox',c.inbox); set('n-focus',c.focus); set('n-focus2',c.focus);
+  set('n-wait',c.waiting); set('n-rack',c.rack); set('n-done',c.done); set('n-mind',c.mind);
   set('n-trim',(c.focus||0)>5?c.focus+' → 5':'');
-  set('pts',st.points_total); set('ptsD',m.points_total||0);
-  set('yt','🎬 '+Math.floor(yt.balance)+'м'+(yt.watching?' ▶':''));
+  set('pts',st.points_total);
+  set('yt','🎬 '+Math.floor(st.yt.balance)+'м'+(st.yt.watching?' ▶':''));
+  document.getElementById('pts').title='всего очков';
   set('call',st.call_at); set('truck',st.truck_at);
   set('n-review',st.review_due?'пора!':'');
+  set('n-pallet',(st.dry_pallets||[]).length||'');
+  fetch('/mirror').then(r=>r.json()).then(m=>set('ptsD',m.points_total?'+'+m.points_total+' сегодня':'')).catch(()=>{});
   fetch('/robot_triage').then(r=>r.json()).then(d=>set('n-robot',d.items.length||''));
+  fetch('/focus/state').then(r=>r.json()).then(d=>{
+    document.getElementById('focusMode').classList.toggle('active',d.on);
+    document.getElementById('focusFlav').textContent=d.on?'идёт · '+Math.floor(d.elapsed/60)+'м':'режим внимания';
+  }).catch(()=>{});
   fetch('/route_triage').then(r=>r.json()).then(d=>set('n-route',d.items.length||''));
   document.getElementById('blocked').style.display=st.blocked?'block':'none';
   const vac=document.getElementById('vac');
-  if(st.on_vacation){vac.style.display='block';document.getElementById('vacD').textContent=st.vacation_until;}
+  if(st.on_vacation){vac.style.display='block';set('vacD',st.vacation_until);}
   else{vac.style.display='none';}
   document.getElementById('r-inbox').classList.toggle('glowing',(c.inbox||0)>0);
-  document.getElementById('r-wait').classList.toggle('glowing',glow.length>0);
+  document.getElementById('r-wait').classList.toggle('glowing',glowN>0);
   document.getElementById('r-review').classList.toggle('glowing',!!st.review_due);
   const stars=st.stars||[];
   document.getElementById('star').style.display=stars.length?'block':'none';
-  document.getElementById('starT').textContent=stars.map(s=>s.text).join(' · ');
-  const q=wn.queue||[];
-  NOW=q[0]||{act:'…',why:'',url:'/terminal'};
-  document.getElementById('nowAct').textContent=NOW.act;
-  const next=q.slice(1,3).filter(x=>!x.calm).map(x=>x.act).join(' · ');
-  document.getElementById('nowWhy').textContent=NOW.why+(next?'  |  дальше: '+next:'');
-  document.getElementById('now').classList.toggle('calm',!!NOW.calm);
+  // звезда - ярлык, а не чтение: одна первая задача плюс счётчик остальных.
+  // Раньше три звезды склеивались в стену текста и топили главную кнопку
+  // счётчик идёт ПЕРЕД текстом: справа строку режет многоточие, и на узком
+  // окне «+2» просто исчезало
+  const s0=stars[0]?stars[0].text:'';
+  set('starN',stars.length>1?stars.length+' звезды: ':'');
+  set('starT',s0.length>70?s0.slice(0,70)+'…':s0);
+  document.getElementById('star').title=stars.map(s=>s.text).join('\n\n');
+  renderStreak(st.streak||{}); renderPrize(st.prize); renderTip(st.tips);
+  // разбор входящих - та же работа, что и в главной кнопке, поэтому его прогресс
+  // живёт волосяной линией прямо в ней, а не отдельной шкалой поперёк экрана
+  const ib=(st.bars||{}).inbox, nb=document.getElementById('nowBar');
+  const pi=ib&&ib.total&&ib.done?Math.min(100,Math.round(100*ib.done/ib.total)):0;
+  nb.style.display=pi?'block':'none';
+  if(pi){nb.firstElementChild.style.width=pi+'%';
+         nb.title='входящие разобраны: '+ib.done+' из '+ib.total;}
+  bar('bar-focus',(st.bars||{}).focus);
+  bar('bar-streak',(st.bars||{}).streak);
+  // «всё разобрано» празднуем ровно один раз в день, а не каждые 15 секунд
+  const key='whBarWin'+new Date().toDateString();
+  if(pi===100&&!localStorage[key]){localStorage[key]='1';if(window.juiceWin)juiceWin('входящие разобраны');}
+  const q=st.queue||[];
+  if(q.length){localStorage.whLastNow=JSON.stringify(q.slice(0,3));paintNow(q);}
 }
 document.addEventListener('keydown',e=>{
   if(e.key===' '&&e.target.tagName!=='INPUT'){e.preventDefault();go(NOW.url)}

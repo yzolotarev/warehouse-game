@@ -4,7 +4,7 @@
 <link rel="icon" href="/assets/favicon.png">
 <meta charset="utf-8">
 <link rel="stylesheet" href="/style.css">
-<script src="/theme.js"></script><script src="/i18n.js"></script><script src="/storozh.js"></script><script src="/juice.js"></script>
+<script src="/theme.js"></script><script src="/welcome.js"></script><script src="/i18n.js"></script><script src="/storozh.js"></script><script src="/ambient.js"></script><script src="/juice.js"></script>
 <title>🎯 Фокус</title>
 <style>
   html,body{margin:0;height:100%;display:flex;flex-direction:column;align-items:center;overflow:hidden}
@@ -43,7 +43,7 @@ function esc(s){const d=document.createElement('div');d.textContent=s;return d.i
 function beep(f,d){try{const a=beep.ac=beep.ac||new AudioContext(),o=a.createOscillator(),g=a.createGain();
   o.type='triangle';o.frequency.value=f;g.gain.value=.05;o.connect(g);g.connect(a.destination);
   o.start();g.gain.exponentialRampToValueAtTime(1e-4,a.currentTime+d);o.stop(a.currentTime+d)}catch(e){}}
-let staleDays=3, dryPallets=[], hiddenStars=0, hiddenStarIds=[];
+let staleDays=3, dryPallets=[], hiddenStars=0, hiddenStarIds=[], pinnedText='';
 let timerSession=null, timerBoxId=null, timerInterval=null;
 function fmtElapsed(s){
   const h=Math.floor(s/3600), m=Math.floor((s%3600)/60), se=s%60;
@@ -71,6 +71,7 @@ async function load(){
   hiddenStars=d.hidden_stars||0; hiddenStarIds=d.hidden_star_ids||[];
   i=Math.min(i,Math.max(0,items.length-1)); render();
   await checkTimer();
+  try{pinnedText=(await api('/pin')).text||'';render();}catch(e){}
 }
 function render(){
   const sb=$('#star-banner');
@@ -99,15 +100,32 @@ function render(){
   const staleRow=stale?`<div style="margin-top:12px">
       <button class="b-ghost" onclick="shelve(${b.id})">🗄 На стеллаж (позже)</button>
     </div>`:'';
+  // 👁 распознавание старого: со второго захода подсознание уже вынесло вердикт -
+  // либо «неактуально», либо «я знаю решение». Обе кнопки - выходы из склада
+  const visitRow=(b.visits>=2)?`<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line)">
+      <div class="meta" style="margin-bottom:6px">👁 заход №${b.visits} · лежит с ${b.born_at.slice(0,10)}</div>
+      <button class="b-ghost" onclick="recognize(${b.id},'stale')">🗑 Уже неактуально</button>
+      <button class="b-ghost" onclick="recognize(${b.id},'known')">💡 Я знаю решение — в фокус</button>
+    </div>`:'';
+  // 😰 две минуты: у страшной задачи главная кнопка - не «сделал», а «начал»
+  const microRow=(b.scary&&b.micro)?`<div id="micro" style="margin-top:12px;padding:10px 12px;border:1px solid var(--vio);border-radius:9px">
+      <button class="b-primary" style="width:100%;white-space:normal" onclick="microStart(${b.id})">▶ 2 минуты: ${esc(b.micro)}</button>
+      <div class="meta" style="margin-top:8px">две минуты уже победа — остальное бонус</div>
+    </div>`:'';
   const starBtn=b.starred
     ?`<button class="b-sec" style="color:var(--gold)" title="снять звезду" onclick="setStar(${b.id},false)">⭐ на завтра</button>`
     :`<button class="b-ghost" title="звезда = главное на завтра (утром решений ноль)" onclick="setStar(${b.id},true)">☆ на завтра</button>`;
+  const pinned=pinnedText&&pinnedText===b.raw_text;
+  const pinBtn=pinned
+    ?`<button class="b-sec" style="color:var(--vio)" title="снять с экрана" onclick="togglePin(0)">📌 висит поверх окон</button>`
+    :`<button class="b-ghost" title="показать поверх всех окон в углу экрана, чтобы не отвлекаться" onclick="togglePin(${b.id})">📌 Вывесить</button>`;
   $('#stage').innerHTML=`<div class="card in" id="c" ${b.starred?'style="border-color:var(--gold)"':''}>
     <div class="meta">${b.starred?'⭐ ':''}#${b.id} · родилась ${b.born_at.slice(0,10)}${pal}${dust}${b.elapsed_seconds_total?` · ⏱ ${fmtElapsed(b.elapsed_seconds_total)}`:''}</div>
     <div class="task">${esc(b.raw_text)}</div>
     ${b.ai_note?`<div class="meta" style="margin:4px 0 10px;padding:8px 10px;border:1px solid var(--vio);border-radius:8px;text-align:left;white-space:pre-wrap">🤖 отчёт ИИ: ${esc(b.ai_note)}</div>`:''}
     <button class="b-ok" onclick="done(${b.id})">✅ Сделал +${reward}</button>
     ${starBtn}
+    ${pinBtn}
     <span id="timer-row" style="display:inline-block;margin:6px 0">
       <span id="timer-elapsed" style="font-size:14px;color:var(--vio);${timerBoxId===b.id?'':'display:none'}">${timerBoxId===b.id&&timerSession?fmtElapsed(Math.floor((Date.now()-new Date(timerSession.started_at+'Z').getTime())/1000)):''}</span>
       <button class="${timerBoxId===b.id?'b-sec':'b-ghost'}" style="${timerBoxId===b.id?'border-color:var(--vio)':''}" id="timer-btn" onclick="toggleTimer(${b.id})">${timerBoxId===b.id?'⏹ Стоп':'▶ Таймер'}</button>
@@ -115,12 +133,52 @@ function render(){
     <button class="b-ghost" title="жду человека/события - уйдёт в Ожидание, напомнит само"
       onclick="toWait(${b.id})">⏳ Жду</button>
     <button class="b-danger" title="уже неактуально" onclick="toTrash(${b.id})">🗑</button>
-    ${ytRow}${hint}${staleRow}
+    ${microRow}${ytRow}${hint}${staleRow}${visitRow}
   </div>`;
   $('#pager').style.display=items.length>1?'flex':'none';
   $('#cnt').textContent=(i+1)+' / '+items.length;
 }
 function pg(d){i=(i+d+items.length)%items.length;render()}
+async function recognize(id,verdict){
+  await api('/recognize',{id,verdict});
+  window.juice&&juice('recognize');
+  i=0;await load();
+}
+// Отсчёт двух минут. На нуле обе кнопки РАВНОВЕСНЫ и дают одно и то же очко:
+// платим за старт, и страху не за что зацепиться.
+let microTimer=null;
+async function microStart(id){
+  await api('/micro_start',{id});
+  const box=document.getElementById('micro');
+  if(!box)return;
+  window.WH_LOADBAR_OWNED=true;
+  let left=120;
+  box.innerHTML='<div style="font-size:28px;font-weight:600" id="mclock">2:00</div>'
+    +'<div class="meta" style="margin-top:6px">делай. остановиться можно на нуле</div>';
+  if(microTimer)clearInterval(microTimer);
+  microTimer=setInterval(()=>{
+    left--;
+    window.WH_setLoadBar&&WH_setLoadBar(Math.round(100*(120-left)/120),'2 минуты');
+    const cl=document.getElementById('mclock');
+    if(cl)cl.textContent=Math.floor(left/60)+':'+String(left%60).padStart(2,'0');
+    if(left<=0){
+      clearInterval(microTimer);microTimer=null;
+      window.juice&&juice('done');beep(660,.12);
+      if(box)box.innerHTML='<div class="meta" style="margin-bottom:8px">две минуты позади — это уже победа</div>'
+        +`<button class="b-ok" onclick="microDone(${id},false)">✅ Хватит на сегодня</button> `
+        +`<button class="b-ok" onclick="microDone(${id},true)">▶ Продолжаю</button>`;
+    }
+  },1000);
+}
+async function microDone(id,continued){
+  const r=await api('/micro_done',{id,continued});
+  window.WH_LOADBAR_OWNED=false;
+  const btn=document.querySelector('#micro button');
+  if(r.points&&window.juiceXP)juiceXP(r.points,btn);
+  if(!continued)await load();
+  else{const box=document.getElementById('micro');
+       if(box)box.innerHTML='<div class="meta">идёшь дальше — закроешь кнопкой «✅ Сделал»</div>';}
+}
 async function toggleTimer(id){
   if(timerBoxId===id){
     // stop
@@ -159,7 +217,12 @@ async function mv(id,to){
     throw new Error('blocked')}
   return r.json()
 }
+async function unpinIfCurrent(id){
+  const b=items.find(o=>o.id===id);
+  if(b&&pinnedText&&pinnedText===b.raw_text){await api('/pin',{text:''}).catch(()=>{});pinnedText='';}
+}
 async function done(id){
+  await unpinIfCurrent(id);
   // авто-стоп таймера если тикает на этой задаче
   if(timerBoxId===id){
     await api('/timer/stop',{box_id:id}).catch(()=>{});
@@ -198,6 +261,7 @@ async function submitNext(pid){
   beep(560,.12);window.juice&&juice('milk');load();
 }
 async function toWait(id){
+  await unpinIfCurrent(id);
   if(timerBoxId===id){await api('/timer/stop',{box_id:id}).catch(()=>{});timerSession=null;timerBoxId=null;if(timerInterval){clearInterval(timerInterval);timerInterval=null;}}
   $('#c').classList.add('fly');beep(300,.12);
   try{await mv(id,'waiting')}catch(e){return} // grow-таймер 1-3-7-14 по умолчанию
@@ -205,6 +269,7 @@ async function toWait(id){
   setTimeout(load,350);
 }
 async function shelve(id){
+  await unpinIfCurrent(id);
   if(timerBoxId===id){await api('/timer/stop',{box_id:id}).catch(()=>{});timerSession=null;timerBoxId=null;if(timerInterval){clearInterval(timerInterval);timerInterval=null;}}
   $('#c').classList.add('fly');beep(340,.1);
   try{await mv(id,'rack')}catch(e){return}
@@ -226,7 +291,15 @@ async function setStar(id,on){
   await load();
   i=Math.max(0,items.findIndex(o=>o.id===cur));render();
 }
+async function togglePin(id){
+  const b=id?items.find(o=>o.id===id):null;
+  await api('/pin',{text:b?b.raw_text:''});
+  beep(b?720:300,.1);
+  pinnedText=b?b.raw_text:'';
+  render();
+}
 async function toTrash(id){
+  await unpinIfCurrent(id);
   if(timerBoxId===id){await api('/timer/stop',{box_id:id}).catch(()=>{});timerSession=null;timerBoxId=null;if(timerInterval){clearInterval(timerInterval);timerInterval=null;}}
   $('#c').classList.add('fly');beep(180,.12);
   try{await mv(id,'trash')}catch(e){return}

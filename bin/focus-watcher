@@ -1,0 +1,215 @@
+#!/usr/bin/env python3
+"""focus-watcher — десктопный компаньон режима Фокус (челлендж).
+
+Рисует поверх ВСЕХ окон (справа снизу) состояние челленджа:
+  • идёт чисто        — таймер + прогресс к цели;
+  • залип в залипалке — КРАСНАЯ тревога с обратным отсчётом до срыва;
+  • итог              — «💀 Проигрыш» / «🏆 Взято!» на несколько секунд.
+А также по случайному таймеру (5–15 мин) начисляет бонус за удержание фокуса.
+
+Вердикты/предупреждения уведомлениями шлёт сам сервер (challenge loop) — здесь
+только визуал. Запускается user-службой warehouse-focus (автозагрузка).
+"""
+import os
+import random
+import subprocess
+import time
+import tkinter as tk
+import urllib.request
+import json
+
+BASE = "http://127.0.0.1:8091"
+BONUS_MIN_S, BONUS_MAX_S = 5 * 60, 15 * 60
+VERDICT_SHOW_S = 8  # сколько секунд держать итог на экране
+
+
+def api(path, post=False):
+    try:
+        req = urllib.request.Request(
+            BASE + path, method="POST" if post else "GET",
+            data=b"{}" if post else None,
+            headers={"Content-Type": "application/json"} if post else {})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return json.load(r)
+    except Exception:
+        return None
+
+
+def notify(title, body):
+    env = dict(os.environ,
+               DISPLAY=os.environ.get("DISPLAY", ":0"),
+               DBUS_SESSION_BUS_ADDRESS=os.environ.get(
+                   "DBUS_SESSION_BUS_ADDRESS",
+                   f"unix:path=/run/user/{os.getuid()}/bus"))
+    try:
+        subprocess.run(["notify-send", "-a", "Фокус", title, body],
+                       env=env, timeout=5, check=False)
+    except Exception:
+        pass
+
+
+def fmt(sec):
+    sec = max(0, int(round(sec)))
+    h, m, s = sec // 3600, sec % 3600 // 60, sec % 60
+    return (f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}")
+
+
+CALM_BG, ALARM_BG, WON_BG = "#12121c", "#3a0f14", "#12241a"
+
+
+class Overlay:
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.root.overrideredirect(True)
+        self.root.attributes("-topmost", True)
+        try:
+            self.root.attributes("-alpha", 0.93)
+        except tk.TclError:
+            pass
+        self.frame = tk.Frame(self.root, bg=CALM_BG,
+                              highlightthickness=2, highlightbackground="#5b5be6")
+        self.frame.pack(fill="both", expand=True)
+        self.title = tk.Label(self.frame, text="", fg="#a9a9ff", bg=CALM_BG,
+                              font=("sans-serif", 11), wraplength=240)
+        self.title.pack(padx=18, pady=(9, 0))
+        self.time = tk.Label(self.frame, text="", fg="#ffffff", bg=CALM_BG,
+                             font=("sans-serif", 24, "bold"))
+        self.time.pack(padx=18)
+        self.sub = tk.Label(self.frame, text="", fg="#8a8aa0", bg=CALM_BG,
+                            font=("sans-serif", 9), wraplength=240)
+        self.sub.pack(padx=18, pady=(0, 9))
+        self.pintxt = tk.Label(self.frame, text="", fg="#e8e8ff", bg=CALM_BG,
+                               font=("sans-serif", 13), wraplength=240, justify="left")
+        self.visible = False
+        self.next_bonus = None
+        self.was_on = False
+        self.verdict_key = None      # (result) чтобы показать итог один раз
+        self.verdict_until = 0
+        self.widgets_mode = "challenge"  # какой набор виджетов сейчас упакован
+
+    def _use_challenge_widgets(self):
+        if self.widgets_mode == "challenge":
+            return
+        self.pintxt.pack_forget()
+        self.title.pack(padx=18, pady=(9, 0))
+        self.time.pack(padx=18)
+        self.sub.pack(padx=18, pady=(0, 9))
+        self.widgets_mode = "challenge"
+
+    def _use_pin_widget(self):
+        if self.widgets_mode == "pin":
+            return
+        self.title.pack_forget()
+        self.time.pack_forget()
+        self.sub.pack_forget()
+        self.pintxt.pack(padx=18, pady=12)
+        self.widgets_mode = "pin"
+
+    def _paint(self, bg, border):
+        for w in (self.frame,):
+            w.config(bg=bg, highlightbackground=border)
+        for w in (self.title, self.time, self.sub):
+            w.config(bg=bg)
+
+    def place(self):
+        self.root.update_idletasks()
+        w, h = self.root.winfo_width(), self.root.winfo_height()
+        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        self.root.geometry(f"+{sw - w - 24}+{sh - h - 60}")
+
+    def show(self):
+        if not self.visible:
+            self.root.deiconify()
+            self.visible = True
+        self.place()
+
+    def hide(self):
+        if self.visible:
+            self.root.withdraw()
+            self.visible = False
+
+    def tick(self):
+        st = api("/focus/state")
+        on = bool(st and st.get("on"))
+        result = (st or {}).get("result") or ""
+        pin = api("/pin")
+        pin_text = (pin or {}).get("text") or ""
+
+        if on:
+            self.verdict_key = None
+            self._use_challenge_widgets()
+            d = st.get("distraction")
+            if d and d.get("active"):
+                left = d["deadline_epoch"] - time.time()
+                self._paint(ALARM_BG, "#e0454d")
+                self.title.config(text=f"⚠ {d.get('pattern')} — уходи!", fg="#ff8a8a")
+                self.time.config(text=fmt(left), fg="#ff5a5a")
+                self.sub.config(text="иначе фокус сорвётся", fg="#e0a0a0")
+            else:
+                self._paint(CALM_BG, "#5b5be6")
+                self.title.config(text="🎯 Фокус", fg="#a9a9ff")
+                self.time.config(text=fmt(st.get("elapsed", 0)), fg="#ffffff")
+                tgt = st.get("target_min", 0)
+                bonus = st.get("bonus_today", 0)
+                sub = f"цель {tgt} мин · +{bonus} 🎁"
+                if pin_text:
+                    sub += f" · 📌 {pin_text}"
+                self.sub.config(text=sub, fg="#8a8aa0")
+            self.show()
+            if not self.was_on:
+                self._schedule_bonus()
+            if self.next_bonus and time.time() >= self.next_bonus:
+                if not (d and d.get("active")):
+                    self._fire_bonus()
+                self._schedule_bonus()
+        else:
+            self.next_bonus = None
+            if result in ("won", "lost"):
+                self._use_challenge_widgets()
+                if self.verdict_key != result:
+                    self.verdict_key = result
+                    self.verdict_until = time.time() + VERDICT_SHOW_S
+                if time.time() < self.verdict_until:
+                    if result == "won":
+                        self._paint(WON_BG, "#3ad07a")
+                        self.title.config(text="🏆 Челлендж взят!", fg="#7dffb0")
+                        self.time.config(text="✓", fg="#7dffb0")
+                        self.sub.config(text="выдержал до конца", fg="#9ad0b0")
+                    else:
+                        self._paint(ALARM_BG, "#e0454d")
+                        self.title.config(text="💀 Проигрыш", fg="#ff8a8a")
+                        self.time.config(text="✗", fg="#ff5a5a")
+                        self.sub.config(text=f"залип в «{st.get('lost_reason','')}»",
+                                        fg="#e0a0a0")
+                    self.show()
+                else:
+                    self.hide()
+            elif pin_text:
+                self.verdict_key = None
+                self._use_pin_widget()
+                self._paint(CALM_BG, "#5b5be6")
+                self.pintxt.config(text=f"📌 {pin_text}", fg="#e8e8ff", bg=CALM_BG)
+                self.show()
+            else:
+                self.verdict_key = None
+                self.hide()
+        self.was_on = on
+        self.root.after(1000, self.tick)
+
+    def _schedule_bonus(self):
+        self.next_bonus = time.time() + random.randint(BONUS_MIN_S, BONUS_MAX_S)
+
+    def _fire_bonus(self):
+        res = api("/focus/bonus", post=True)
+        if res and res.get("amount"):
+            notify("🎁 Бонус за фокус",
+                   f"+{res['amount']} ⭐ за то, что держишь фокус. Так держать!")
+
+    def run(self):
+        self.root.after(500, self.tick)
+        self.root.mainloop()
+
+
+if __name__ == "__main__":
+    Overlay().run()

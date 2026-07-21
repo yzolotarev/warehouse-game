@@ -87,7 +87,7 @@
 <div class="plaque" id="tip"><span class="nm"></span> <span class="ct"></span><br><span class="sb"></span></div>
 <div class="plaque" id="toast"></div>
 <div class="plaque" id="foot">зов <span id="callT"></span> · фура <span id="truckT"></span> · ЛКМ тащить · колесо зум · R повернуть · I разбор</div>
-<script src="/storozh.js"></script><script src="/i18n.js"></script>
+<script src="/storozh.js"></script><script src="/i18n.js"></script><script src="/welcome.js"></script>
 <script>
 "use strict";
 const T=window.WH_T||(x=>x);
@@ -104,6 +104,13 @@ if(localStorage.whStart!=='world'&&location.hash!=='#world'){location.replace('/
     delete localStorage.whHiddenAt;
     if(since&&Date.now()-since>=AWAY_MS)location.replace('/hub');
   });
+})();
+// отметка активности для эффекта "давно не заходил" на hub.html (см. theme.js)
+(function(){
+  let last=0;
+  const mark=()=>{const now=Date.now();if(now-last<10000)return;last=now;localStorage.whLastActive=now};
+  document.addEventListener('click',mark);
+  document.addEventListener('keydown',mark);
 })();
 // "загрузка дня": та же шкала 7:00-23:00, что и на остальных страницах (theme.js) -
 // заполнение + цвет teal->amber->warm, без цифр (число только в title по hover)

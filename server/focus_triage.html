@@ -4,7 +4,7 @@
 <link rel="icon" href="/assets/favicon.png">
 <meta charset="utf-8">
 <link rel="stylesheet" href="/style.css">
-<script src="/theme.js"></script><script src="/i18n.js"></script><script src="/storozh.js"></script><script src="/juice.js"></script>
+<script src="/theme.js"></script><script src="/welcome.js"></script><script src="/i18n.js"></script><script src="/storozh.js"></script><script src="/ambient.js"></script><script src="/juice.js"></script>
 <title>✂ Разбор фокуса</title>
 <style>
   html,body{margin:0;height:100%;display:flex;flex-direction:column;align-items:center;overflow:hidden}
@@ -22,6 +22,9 @@
   @keyframes inup{from{transform:translateY(14px);opacity:0}}
   a{font-size:13px;text-decoration:none;margin-top:auto;text-align:center}
   #cnt{text-align:center;color:var(--dim);font-size:13px;margin-top:12px}
+  #timerbar{height:4px;background:var(--line);border-radius:2px;margin:14px 0 2px;overflow:hidden}
+  #timerfill{height:100%;width:100%;background:var(--dim)}
+  #timerfill.fast{background:var(--green)}
 </style>
 </head>
 <body><div id="wrap">
@@ -52,7 +55,9 @@ function render(){
   // бетчинг, как в терминале: один вопрос по ВСЕЙ пачке, потом следующий.
   // Проход 1 - разметка для робота (только неразмеченные), проход 2 - судьба
   const tagQ=items.filter(x=>x.ai_ok===null||x.ai_ok===undefined);
-  const tagPhase=tagQ.length>0;
+  // ЗАМОРОЖЕНО 21.07 (#283/#304): проход разметки «Робот?» выключен - ИИ откидывал
+  // задачи, батчинг-исполнительство не пошло. Разморозка: tagQ.length>0
+  const tagPhase=false;
   const b=tagPhase?tagQ[0]:items[0];
   const pal=b.pallet_title?` · 🧱 ${esc(b.pallet_title)}`:'';
   const dust=b.idle_days>3?` · <span style="color:var(--sand)">🕸 лежит ${b.idle_days} дн.</span>`:'';
@@ -68,14 +73,40 @@ function render(){
     <div class="meta">${b.starred?'⭐ ':''}${b.ai_ok===1?'🤖 ':''}#${b.id}${pal}${dust} · родилась ${b.born_at.slice(0,10)}</div>
     <div class="task">${esc(b.raw_text)}</div>
     ${btns}
+    <div id="timerbar"><div id="timerfill"></div></div>
   </div>`;
   $('#cnt').textContent=tagPhase
     ?`проход 1 из 2 · потом судьба всех ${items.length}`
     :`осталось решить ${items.length} · в фокусе останется ~${keptN}+`;
+  startTimer();
+}
+const SPEED_LIMIT_MS=10000; // необязательный - истёк срок, ничего не будет
+let cardShownAt=0;
+function startTimer(){
+  cardShownAt=Date.now();
+  const f=$('#timerfill');
+  if(!f)return;
+  f.classList.remove('fast');
+  f.style.transition='none';
+  f.style.width='100%';
+  requestAnimationFrame(()=>requestAnimationFrame(()=>{
+    f.style.transition=`width ${SPEED_LIMIT_MS}ms linear`;
+    f.style.width='0%';
+  }));
+}
+function isFast(){return Date.now()-cardShownAt<=SPEED_LIMIT_MS}
+function flashFast(){
+  const f=$('#timerfill');
+  if(!f)return;
+  f.style.transition='none';
+  f.style.width='100%';
+  f.classList.add('fast');
 }
 async function tag(ok){
   const b=items.find(x=>x.ai_ok===null||x.ai_ok===undefined);
-  try{await api('/robot_mark',{id:b.id,ok})}
+  const fast=isFast();
+  if(fast)flashFast();
+  try{await api('/robot_mark',{id:b.id,ok,fast})}
   catch(e){alert('не отметилось: '+e.message);return}
   hist.push({type:'tag',box:b,idx:items.indexOf(b)});
   if(ok)items.splice(items.indexOf(b),1); // «Робот» = уехала в ящик робота
@@ -84,10 +115,19 @@ async function tag(ok){
     juiceWin('Фокус протегирован!'); // проход 1 закрыт - переходим к судьбам
   render();
 }
-function keep(){hist.push({type:'keep',box:items[0]});keptN++;items.shift();render()}
+function keep(){
+  if(isFast()){
+    flashFast();
+    setTimeout(()=>{hist.push({type:'keep',box:items[0]});keptN++;items.shift();render()},150);
+    return;
+  }
+  hist.push({type:'keep',box:items[0]});keptN++;items.shift();render();
+}
 async function move(to){
   const b=items[0];
-  try{await api('/move',{id:b.id,to})}
+  const fast=isFast();
+  if(fast)flashFast();
+  try{await api('/move',{id:b.id,to,fast})}
   catch(e){alert('не уехала: '+e.message);return}
   hist.push({type:'move',box:b,to});
   items.shift();render();

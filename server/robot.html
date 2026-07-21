@@ -4,7 +4,7 @@
 <link rel="icon" href="/assets/favicon.png">
 <meta charset="utf-8">
 <link rel="stylesheet" href="/style.css">
-<script src="/theme.js"></script><script src="/i18n.js"></script><script src="/storozh.js"></script><script src="/juice.js"></script>
+<script src="/theme.js"></script><script src="/welcome.js"></script><script src="/i18n.js"></script><script src="/storozh.js"></script><script src="/ambient.js"></script><script src="/juice.js"></script>
 <title>🤖 Разбор для робота</title>
 <style>
   html,body{margin:0;height:100%;display:flex;flex-direction:column;align-items:center;overflow:hidden}
@@ -37,10 +37,10 @@ const $=s=>document.querySelector(s);
 async function api(p,body){const r=await fetch(p,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});return r.json()}
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
 const SHELF={focus:'🎯 фокус',rack:'🗄 стеллаж',pallet_step:'🧱 шаг проекта',waiting:'⏳ ожидание'};
-let items=[],markedNow=0,marked0=0;
+let items=[],markedNow=0,marked0=0,hist=[];
 async function load(){
   const d=await api('/robot_triage');
-  items=d.items;marked0=d.marked;markedNow=0;render();
+  items=d.items;marked0=d.marked;markedNow=0;hist=[];render();
 }
 function render(){
   if(!items.length){
@@ -57,20 +57,30 @@ function render(){
     <button class="b-primary" onclick="mark(true)">🤖 Робот</button>
     <button class="b-sec" onclick="mark(false)">🙅 Не робот</button>
     <button class="b-ghost" title="пропустить, решу позже" onclick="skip()">⤵ позже</button>
+    ${hist.length?'<button class="b-ghost" title="Backspace" onclick="undo()">↩ шаг назад</button>':''}
   </div>`;
-  $('#cnt').textContent=`осталось ${items.length}`;
+  $('#cnt').textContent=`осталось ${items.length}`+(hist.length?' · ↩ Backspace':'');
 }
 async function mark(ok){
-  const b=items.shift();markedNow++;
+  const b=items.shift();markedNow++;hist.push(b);
   api('/robot_mark',{id:b.id,ok});
   // фокус едет первым; протегирован последний фокусный → маленькая победа
   if(b.shelf==='focus'&&!items.some(x=>x.shelf==='focus')&&window.juiceWin)
     juiceWin('Фокус протегирован!');
   render();
 }
+function undo(){
+  const b=hist.pop();
+  if(!b)return;
+  markedNow=Math.max(0,markedNow-1);
+  api('/robot_unmark',{id:b.id});
+  items.unshift(b);render();
+}
 function skip(){items.push(items.shift());render()}
 document.addEventListener('keydown',e=>{
-  if(e.target.tagName==='INPUT'||!items.length)return;
+  if(e.target.tagName==='INPUT')return;
+  if(e.key==='Backspace'){e.preventDefault();undo();return}
+  if(!items.length)return;
   if(e.key==='1')mark(true);
   if(e.key==='2')mark(false);
   if(e.key==='3')skip();

@@ -12,6 +12,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.error
@@ -46,12 +47,37 @@ TRIAGE_POINTS = 1     # за разобранную коробку
 RITUAL_POINTS = 10    # за инбокс, разобранный до нуля
 DONE_POINTS = 3       # за сделанную задачу
 SERIES_POINTS = 2     # за каждый следующий шаг той же паллеты за день (батчинг)
+SPEED_POINTS = 1      # уложился в таймер разбора (необязательный, без штрафа)
 REVIEW_POINTS = 25    # за общую пересборку
 REVIEW_DAYS = 3        # каждые N дней
 RACK_REVIEW_POINTS = 8  # за полную ревизию стеллажа (не чаще раза в день)
 REST_POINTS = 2       # за преднамеренный отдых (кофейня, не чаще раза в 30 мин)
+MICRO_POINTS = 1      # за НАЧАЛО страшной задачи (две минуты) - платим за старт
 STALE_FOCUS_DAYS = 3    # фокус без движения → пыль
 STALE_PALLET_DAYS = 30  # паллета без движения → заморозка
+
+# ─── 🔥 Серия дней ────────────────────────────────────────────────────────────
+# Loss aversion - самая сильная механика удержания и самая злая: страх сломать
+# серию бьёт по человеку в больной день. Поэтому серия здесь ТИХАЯ: ни одного
+# уведомления, ни одного очка за длину (иначе она станет доходом, который
+# страшно потерять), страховки видны так же явно, как само число, отпуск её
+# не рвёт физически, и есть бесплатное прощение раз в месяц (21.07)
+STREAK_FREEZE_EVERY = 7   # каждые N дней серии - +1 страховка
+STREAK_FREEZE_MAX = 3
+STREAK_SHOW_FROM = 2      # серию из одного дня не показываем вообще
+STREAK_REPAIR_DAYS = 30   # прощение обрыва не чаще раза в N дней
+STREAK_MILESTONES = (7, 30, 100)
+
+# ─── 📦 Ящик (переменное вознаграждение) ──────────────────────────────────────
+# Скиннер: непредсказуемая награда бьёт сильнее предсказуемой. Но пустышек тут
+# не бывает НИКОГДА - случайность в том, ЧТО выпало, а не выпало ли; лимит один
+# ящик в сутки; платного ускорения открытия нет (валюта - своё же внимание)
+ROLL_COST = 40
+ROLL_DELAY_MIN = 45       # задержка открытия: превращает покупку в предвкушение
+ROLL_POOL_MIN = 3         # меньше трёх наград в пуле - розыгрыша нет
+
+LOAD_TIRED_PCT = 80       # выше - склад сам поднимает «☕ Кофейня» наверх очереди
+LOAD_FULL_MIN = 6 * 60    # «день загружен на 100%» = 6 часов натиканных таймеров
 DAY_START_H = int(os.environ.get("WAREHOUSE_DAY_START", "3"))
 SQL_TODAY = f"date('now','localtime','-{DAY_START_H} hours')"
 TIMER_MAX_S = 4 * 3600
@@ -61,6 +87,113 @@ TIMER_AFK_STOP_S = 15 * 60
 def game_today():
     """Игровой «сегодня»: сдвиг границы на DAY_START_H часов ночи."""
     return (datetime.now() - timedelta(hours=DAY_START_H)).date()
+
+
+# ─── 🔥 Серия дней: журнал, а не вычисление ───────────────────────────────────
+# streak_days - материализованный журнал: проверяется глазами и чинится руками,
+# в отличие от «посчитаем из events». Каждый день ровно одна строка.
+
+def streak_touch(conn):
+    """Отметить, что человек СЕГОДНЯ приходил. Годится любое движение коробки -
+    серия меряет «пришёл», а не объём сделанного."""
+    conn.execute("INSERT OR IGNORE INTO streak_days(day,kind) VALUES(?, 'active')",
+                 (game_today().isoformat(),))
+
+
+def _streak_rows(conn):
+    return {r["day"]: r["kind"] for r in conn.execute(
+        "SELECT day, kind FROM streak_days ORDER BY day")}
+
+
+def streak_settle(conn):
+    """Закрыть дыру между последним отмеченным днём и сегодня.
+
+    Каждый пропущенный день гасится страховкой, пока они есть. На первом
+    непокрытом - обрыв. Идемпотентна: зовётся на каждом чтении."""
+    rows = _streak_rows(conn)
+    if not rows:
+        return
+    today = game_today()
+    last = date.fromisoformat(max(rows))
+    if last >= today:
+        return
+    freezes = int(get_flag(conn, "streak_freezes", "0") or 0)
+    day = last + timedelta(days=1)
+    while day < today:
+        if rows.get(day.isoformat()):
+            day += timedelta(days=1)
+            continue
+        if freezes > 0:
+            freezes -= 1
+            conn.execute("INSERT OR IGNORE INTO streak_days(day,kind) VALUES(?, 'freeze')",
+                         (day.isoformat(),))
+            log_event(conn, "streak_freeze_used", day=day.isoformat(), left=freezes)
+            day += timedelta(days=1)
+            continue
+        # страховок нет - серия рвётся. Ни уведомления, ни красного цвета:
+        # обрыв это факт, а не наказание
+        had = _streak_len(_streak_rows(conn), last)
+        log_event(conn, "streak_break", had=had, missed=day.isoformat())
+        set_flag(conn, "streak_broken_at", day.isoformat())
+        set_flag(conn, "streak_broken_had", str(had))
+        break
+    set_flag(conn, "streak_freezes", str(freezes))
+
+
+def _streak_len(rows, upto):
+    """Длина непрерывной серии, заканчивающейся днём upto."""
+    n = 0
+    day = upto
+    while rows.get(day.isoformat()):
+        n += 1
+        day -= timedelta(days=1)
+    return n
+
+
+def streak_state(conn):
+    """Что показать человеку: число, страховки, лента последних 7 дней."""
+    streak_settle(conn)
+    rows = _streak_rows(conn)
+    today = game_today()
+    days = _streak_len(rows, today)
+    if not days:
+        # сегодня ещё не приходил - серия жива, если вчера был
+        days = _streak_len(rows, today - timedelta(days=1))
+    best = max(int(get_flag(conn, "streak_best", "0") or 0), days)
+    set_flag(conn, "streak_best", str(best))
+    freezes = int(get_flag(conn, "streak_freezes", "0") or 0)
+    # вехи дают СТРАХОВКИ, а не очки: серия должна остаться статусом, который
+    # держишь, а не доходом, который боишься потерять
+    hit = [int(x) for x in (get_flag(conn, "streak_milestones", "") or "").split(",") if x]
+    for m in STREAK_MILESTONES:
+        if days >= m and m not in hit:
+            hit.append(m)
+            freezes = min(STREAK_FREEZE_MAX, freezes + 1)
+            log_event(conn, "streak_milestone", days=m)
+    set_flag(conn, "streak_milestones", ",".join(str(x) for x in sorted(hit)))
+    # плюс страховка за каждые STREAK_FREEZE_EVERY дней (не чаще одной на веху)
+    earned = days // STREAK_FREEZE_EVERY
+    claimed = int(get_flag(conn, "streak_freezes_claimed", "0") or 0)
+    if earned > claimed:
+        freezes = min(STREAK_FREEZE_MAX, freezes + (earned - claimed))
+        set_flag(conn, "streak_freezes_claimed", str(earned))
+    if days == 0:
+        set_flag(conn, "streak_freezes_claimed", "0")
+    set_flag(conn, "streak_freezes", str(freezes))
+    dots = []
+    for i in range(6, -1, -1):
+        d = (today - timedelta(days=i)).isoformat()
+        dots.append({"day": d, "kind": rows.get(d, "miss")})
+    broke_had = int(get_flag(conn, "streak_broken_had", "0") or 0)
+    last_repair = get_flag(conn, "last_streak_repair")
+    can_repair = bool(get_flag(conn, "streak_broken_at")) and (
+        not last_repair
+        or (today - date.fromisoformat(last_repair)).days >= STREAK_REPAIR_DAYS)
+    return {"days": days, "best": best, "freezes": freezes,
+            "today_done": rows.get(today.isoformat()) == "active",
+            "show": days >= STREAK_SHOW_FROM, "dots": dots,
+            "broken_had": broke_had if broke_had and days < broke_had else 0,
+            "can_repair": can_repair}
 
 
 # ─── 🎬 Кредит перекусов (earned screen time) ─────────────────────────────────
@@ -148,6 +281,23 @@ CREATE TABLE IF NOT EXISTS chest(
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
   bought_at TEXT
 );
+CREATE TABLE IF NOT EXISTS focus_distractions(
+  pattern TEXT PRIMARY KEY,            -- слово-метка: ищется в app/title окна (AW)
+  domains TEXT NOT NULL DEFAULT '',    -- домены для жёсткого блока (через запятую)
+  allowed_min INTEGER NOT NULL DEFAULT 0,   -- цикл-губернатор: минут «можно»
+  cooldown_min INTEGER NOT NULL DEFAULT 0,  -- минут «остывания» (домены закрыты)
+  added_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE TABLE IF NOT EXISTS streak_days(
+  day  TEXT PRIMARY KEY,                    -- игровая дата (game_today)
+  kind TEXT NOT NULL DEFAULT 'active',      -- active | freeze | vacation | repair
+  at   TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS ix_boxes_shelf ON boxes(shelf);
+CREATE INDEX IF NOT EXISTS ix_moves_box ON moves(box_id);
+CREATE INDEX IF NOT EXISTS ix_moves_at ON moves(at);
+CREATE INDEX IF NOT EXISTS ix_events_kind_at ON events(kind, at);
+CREATE INDEX IF NOT EXISTS ix_points_at ON points(at);
 """
 
 
@@ -258,6 +408,29 @@ def init_db():
             # больше в конвейер распределения не едет. Отправленные в проект
             # коробки уезжают в done - им флаг не нужен (19.07)
             conn.execute("ALTER TABLE boxes ADD COLUMN tech_checked INTEGER")
+        if "micro" not in cols:
+            # двухминутный первый шаг страшной задачи: снижаем «способность» по
+            # Fogg до предела - целиком страшное не начинают никогда (21.07)
+            conn.execute("ALTER TABLE boxes ADD COLUMN micro TEXT")
+        if "scary" not in cols:
+            conn.execute("ALTER TABLE boxes ADD COLUMN scary INTEGER NOT NULL DEFAULT 0")
+        ccols = {r["name"] for r in conn.execute("PRAGMA table_info(chest)")}
+        if "kind" not in ccols:
+            # fixed = обычный магазин (как было), pool = награда-кандидат для
+            # розыгрыша, prize = выпавший ящик, ждущий открытия (21.07)
+            conn.execute("ALTER TABLE chest ADD COLUMN kind TEXT NOT NULL DEFAULT 'fixed'")
+        if "rarity" not in ccols:
+            conn.execute("ALTER TABLE chest ADD COLUMN rarity INTEGER NOT NULL DEFAULT 1")
+        if "opens_at" not in ccols:
+            conn.execute("ALTER TABLE chest ADD COLUMN opens_at TEXT")
+        if "source_id" not in ccols:
+            conn.execute("ALTER TABLE chest ADD COLUMN source_id INTEGER")
+        if not conn.execute("SELECT 1 FROM streak_days LIMIT 1").fetchone():
+            # первый запуск серии: восстанавливаем её из настоящей истории движений,
+            # а не начинаем с нуля - человек работал тут месяцами (21.07)
+            conn.execute(
+                "INSERT OR IGNORE INTO streak_days(day,kind) "
+                "SELECT DISTINCT date(at,'-%d hours'), 'active' FROM moves" % DAY_START_H)
         pcols = {r["name"] for r in conn.execute("PRAGMA table_info(pallets)")}
         if "note_path" not in pcols:
             conn.execute("ALTER TABLE pallets ADD COLUMN note_path TEXT")
@@ -301,9 +474,30 @@ def theme_js():
     return FileResponse(Path(__file__).parent / "theme.js", media_type="text/javascript")
 
 
+@app.get("/welcome.js")
+def welcome_js():
+    return FileResponse(Path(__file__).parent / "welcome.js", media_type="text/javascript")
+
+
 @app.get("/storozh.js")
 def storozh_js():
     return FileResponse(Path(__file__).parent / "storozh.js", media_type="text/javascript")
+
+
+@app.get("/ambient.js")
+def ambient_js():
+    return FileResponse(Path(__file__).parent / "ambient.js", media_type="text/javascript")
+
+
+@app.get("/ambient_list")
+def ambient_list():
+    """Локальные амбиенс-фоны (#307): всё, что лежит в assets/ambient/.
+    Кинул файл в папку - появился в меню фонов, имя = имя файла."""
+    d = Path(__file__).parent / "assets" / "ambient"
+    if not d.is_dir():
+        return {"files": []}
+    return {"files": sorted(f.name for f in d.iterdir()
+                            if f.suffix.lower() in (".mp4", ".webm", ".mov"))}
 
 
 @app.get("/juice.js")
@@ -328,6 +522,7 @@ class Move(BaseModel):
     grp: str | None = None
     wait_mode: str = "grow"       # grow (1-3-7-14) | shrink (14-7-3-1) | every
     wait_days: int | None = None  # для every: каждые N дней
+    fast: bool = False            # уложился в необязательный таймер разбора
 
 
 # мета-бэклог: идеи ПРО САМ склад/инструменты для его правки - не мешают
@@ -926,6 +1121,36 @@ def _export_mind(box_id: int, text: str) -> str | None:
         return None
 
 
+FOCUS_CAP = 5
+
+
+def _displace_focus(conn):
+    """Вытеснение (21.07, пересборка философии): ёмкость фокуса = FOCUS_CAP, БЕЗ часов.
+    Свежая кровь выталкивает самую застоявшуюся незвёздную коробку обратно на стеллаж -
+    кровь не должна стоять. ⭐ = прищепка: звёздную кровоток не уносит.
+    Застоялость v1 = самый ранний въезд в фокус (по moves), не время суток."""
+    displaced = []
+    while True:
+        n = conn.execute("SELECT COUNT(*) c FROM boxes WHERE shelf='focus'").fetchone()["c"]
+        if n <= FOCUS_CAP:
+            break
+        v = conn.execute(
+            "SELECT b.id, MAX(mv.at) entered FROM boxes b "
+            "LEFT JOIN moves mv ON mv.box_id=b.id AND mv.to_shelf='focus' "
+            "WHERE b.shelf='focus' AND b.starred=0 "
+            "GROUP BY b.id ORDER BY entered LIMIT 1").fetchone()
+        if not v:
+            break  # весь фокус звёздный - не трогаем
+        conn.execute("UPDATE boxes SET shelf='rack' WHERE id=?", (v["id"],))
+        conn.execute("INSERT INTO moves(box_id, from_shelf, to_shelf) "
+                     "VALUES(?, 'focus', 'rack')", (v["id"],))
+        # приезд на стеллаж = как обычный: попадёт в отложенную контекстуализацию
+        set_flag(conn, "recontext_dirty", datetime.now().isoformat(timespec="seconds"))
+        log_event(conn, "displace", id=v["id"])
+        displaced.append(v["id"])
+    return displaced
+
+
 @app.post("/move")
 def move_box(m: Move):
     if m.to not in SHELVES:
@@ -953,6 +1178,8 @@ def move_box(m: Move):
         conn.execute(
             "INSERT INTO moves(box_id, from_shelf, to_shelf) VALUES(?, ?, ?)",
             (m.id, row["shelf"], m.to))
+        if m.to == "focus":
+            _displace_focus(conn)
         if m.context:
             conn.execute("INSERT OR IGNORE INTO racks(context) VALUES(?)", (m.context,))
         if m.to == "rack":
@@ -1021,6 +1248,16 @@ def move_box(m: Move):
             note = _export_mind(m.id, row["raw_text"])
             if note:
                 log_event(conn, "mind_export", id=m.id, note=note)
+                # #284 (21.07): мысль НЕ живёт на складе - заметка создана, коробка
+                # сразу в архив, отдельного обзора нет. Экспорт не удался (note=None) -
+                # остаётся на mind как страховка, чтобы мысль не пропала без заметки.
+                conn.execute("UPDATE boxes SET shelf='archived' WHERE id=?", (m.id,))
+                conn.execute("INSERT INTO moves(box_id, from_shelf, to_shelf) "
+                             "VALUES(?, 'mind', 'archived')", (m.id,))
+        if m.fast:
+            pts += SPEED_POINTS
+            award(conn, SPEED_POINTS, f"скорость разбора #{m.id}")
+        streak_touch(conn)   # серия: любое движение = день засчитан
         log_event(conn, "move", id=m.id, frm=row["shelf"], to=m.to,
                   context=m.context, points=pts)
         # шарнир done→next: закрыл шаг проекта и очередь+фокус опустели → зовём
@@ -1061,6 +1298,100 @@ def _close_timer(conn, sess, elapsed, note):
 
 
 # ─── ⏱ Timer API ──────────────────────────────────────────────────────────────
+
+
+# ─── 👁 Распознавание старого (коробка #308) ──────────────────────────────────
+# Гипотеза Ярослава: коробка, увиденная второй раз, обрабатывается иначе - либо
+# «уже неактуально», либо «я же знаю решение». Оба исхода - ВЫХОДЫ, а стареющему
+# складу нужны именно выходы. Данные уже лежат в moves, миграция не нужна.
+
+class Recognize(BaseModel):
+    id: int
+    verdict: str          # stale | known
+
+
+@app.post("/recognize")
+def recognize(r: Recognize):
+    if r.verdict not in ("stale", "known"):
+        raise HTTPException(400, "verdict must be stale|known")
+    with db() as conn:
+        row = conn.execute("SELECT shelf FROM boxes WHERE id=?", (r.id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "no box")
+        visits = conn.execute("SELECT COUNT(*) c FROM moves WHERE box_id=?",
+                              (r.id,)).fetchone()["c"]
+        to = "trash" if r.verdict == "stale" else "focus"
+        conn.execute("UPDATE boxes SET shelf=? WHERE id=?", (to, r.id))
+        if r.verdict == "known":
+            conn.execute("UPDATE boxes SET starred=1, starred_at=? WHERE id=?",
+                         (game_today().isoformat(), r.id))
+        conn.execute("INSERT INTO moves(box_id, from_shelf, to_shelf) VALUES(?,?,?)",
+                     (r.id, row["shelf"], to))
+        streak_touch(conn)
+        # очков НЕ даётся ни за один исход: платить за удаление значит покупать
+        # читерство, а за «знаю решение» - поощрять самообман
+        log_event(conn, "recognize", id=r.id, verdict=r.verdict, visits=visits)
+    return {"ok": True, "to": to}
+
+
+# ─── 😰 Две минуты (коробка #311) ─────────────────────────────────────────────
+# Fogg B=MAP: когда мотивация низкая, единственный рычаг - способность. Все
+# прочие призывы склада сформулированы в объёме пачки («Разобрать входящие (17)»)
+# - для страшной задачи это ровно наоборот.
+
+class MicroSet(BaseModel):
+    id: int
+    text: str
+
+
+class MicroDone(BaseModel):
+    id: int
+    continued: bool = False
+
+
+@app.post("/micro_set")
+def micro_set(m: MicroSet):
+    text = m.text.strip()
+    if not text:
+        raise HTTPException(400, "empty micro step")
+    with db() as conn:
+        row = conn.execute("SELECT shelf FROM boxes WHERE id=?", (m.id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "no box")
+        conn.execute("UPDATE boxes SET micro=?, scary=1, shelf='focus' WHERE id=?",
+                     (text, m.id))
+        if row["shelf"] != "focus":
+            conn.execute("INSERT INTO moves(box_id, from_shelf, to_shelf) VALUES(?,?,'focus')",
+                         (m.id, row["shelf"]))
+            streak_touch(conn)
+            _displace_focus(conn)
+        log_event(conn, "micro_set", id=m.id, micro=text)
+    return {"ok": True}
+
+
+@app.post("/micro_start")
+def micro_start(body: dict):
+    box_id = int(body.get("id", 0))
+    with db() as conn:
+        log_event(conn, "micro_start", id=box_id)
+    return {"ok": True, "seconds": 120}
+
+
+@app.post("/micro_done")
+def micro_done(m: MicroDone):
+    """Очко даётся за СТАРТ и одинаково независимо от того, продолжил человек
+    или бросил. Эта симметрия и есть вся механика: если платят за начало, страху
+    не за что зацепиться. Идемпотентно - фарм перезагрузкой не работает."""
+    reason = f"две минуты #{m.id}"
+    with db() as conn:
+        already = conn.execute("SELECT 1 FROM points WHERE reason=?", (reason,)).fetchone()
+        pts = 0
+        if not already:
+            award(conn, MICRO_POINTS, reason)
+            pts = MICRO_POINTS
+        streak_touch(conn)
+        log_event(conn, "micro_done", id=m.id, continued=m.continued, points=pts)
+    return {"ok": True, "points": pts}
 
 
 class TimerStart(BaseModel):
@@ -1777,6 +2108,21 @@ def route_skip(s: RouteSkip):
     return {"ok": True}
 
 
+@app.post("/route_done")
+def route_done(s: RouteSkip):
+    """«Готово» прямо в разборе по проектам: коробка едет в отгрузку (done)."""
+    with db() as conn:
+        row = conn.execute("SELECT shelf FROM boxes WHERE id=?", (s.id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "нет такой коробки")
+        conn.execute("UPDATE boxes SET shelf='done', tech_checked=1 WHERE id=?", (s.id,))
+        conn.execute(
+            "INSERT INTO moves(box_id, from_shelf, to_shelf) VALUES(?, ?, 'done')",
+            (s.id, row["shelf"]))
+        log_event(conn, "route_done", id=s.id, frm=row["shelf"])
+    return {"ok": True}
+
+
 @app.get("/robot_triage")
 def robot_triage():
     """Конвейер разметки: живые коробки, по которым ещё не решено Робот/Не робот."""
@@ -1795,6 +2141,7 @@ def robot_triage():
 class RobotMark(BaseModel):
     id: int
     ok: bool
+    fast: bool = False  # уложился в необязательный таймер разбора
 
 
 @app.post("/robot_mark")
@@ -1813,6 +2160,8 @@ def robot_mark(m: RobotMark):
             conn.execute(
                 "INSERT INTO moves(box_id, from_shelf, to_shelf) VALUES(?, ?, 'robot')",
                 (m.id, row["shelf"]))
+        if m.fast:
+            award(conn, SPEED_POINTS, f"скорость разметки #{m.id}")
         log_event(conn, "robot_mark", id=m.id, ok=m.ok, frm=row["shelf"])
     return {"ok": True}
 
@@ -1968,6 +2317,10 @@ def focus_list():
             last = conn.execute("SELECT MAX(at) m FROM moves WHERE box_id=?",
                                 (r["id"],)).fetchone()["m"]
             d["idle_days"] = (today - date.fromisoformat(last[:10])).days if last else 0
+            # сколько раз коробку уже трогали: со второго захода подсознание
+            # относится к ней иначе - либо «неактуально», либо «знаю решение»
+            d["visits"] = conn.execute("SELECT COUNT(*) c FROM moves WHERE box_id=?",
+                                       (r["id"],)).fetchone()["c"]
             d["reward"] = DONE_POINTS
             d["series"] = 0
             d["pallet_title"] = None
@@ -2021,35 +2374,39 @@ def _review_due(conn):
     return (game_today() - date(2025, 1, 1)).days % REVIEW_DAYS == 0
 
 
-@app.get("/whatnow")
-def whatnow():
+def _whatnow(conn):
     """Очередь «что сейчас»: все ждущие разборы по приоритету, одним списком.
 
     Узкая окрестность внимания: хаб и мир показывают верхний пункт - сделал один
-    разбор, на его месте сам всплывает следующий, глазами бегать не надо."""
+    разбор, на его месте сам всплывает следующий, глазами бегать не надо.
+
+    Принимает готовое соединение: хаб собирает всё одним запросом (/hub_summary),
+    а не девятью подряд - главная кнопка должна быть с текстом в первом кадре."""
     today = game_today().isoformat()
     hour = datetime.now().hour
     ph = ",".join("?" * len(AI_SHELVES))
-    with db() as conn:
-        counts = dict(conn.execute(
-            "SELECT shelf, COUNT(*) FROM boxes GROUP BY shelf").fetchall())
-        blocked = bool(get_flag(conn, "blocked"))
-        review = _review_due(conn)
-        glow_n = sum(1 for r in conn.execute("SELECT glow_timer FROM boxes WHERE shelf='waiting'")
-                     if (json.loads(r["glow_timer"] or "{}").get("next") or "~") <= today)
-        robot_n = conn.execute(
-            f"SELECT COUNT(*) c FROM boxes WHERE shelf IN ({ph}) AND ai_ok IS NULL "
-            f"AND {AI_NOT_PROJECT}", AI_SHELVES).fetchone()["c"]
-        route_n = conn.execute(
-            f"SELECT COUNT(*) c FROM boxes WHERE shelf IN ({ph}) "
-            f"AND tech_checked IS NULL AND {AI_NOT_PROJECT}", AI_SHELVES).fetchone()["c"]
-        dry = _dry_pallets(conn)
-        unformed_n = conn.execute(
-            "SELECT COUNT(*) c FROM boxes WHERE shelf='pallet_step' "
-            "AND pallet_id IS NULL").fetchone()["c"]
-        stars = [r["raw_text"] for r in conn.execute(
-            "SELECT raw_text FROM boxes WHERE shelf='focus' AND starred=1"
-            " AND starred_at IS NOT NULL AND starred_at<=? ORDER BY id", (today,))]
+    counts = dict(conn.execute(
+        "SELECT shelf, COUNT(*) FROM boxes GROUP BY shelf").fetchall())
+    blocked = bool(get_flag(conn, "blocked"))
+    review = _review_due(conn)
+    glow_n = sum(1 for r in conn.execute("SELECT glow_timer FROM boxes WHERE shelf='waiting'")
+                 if (json.loads(r["glow_timer"] or "{}").get("next") or "~") <= today)
+    robot_n = conn.execute(
+        f"SELECT COUNT(*) c FROM boxes WHERE shelf IN ({ph}) AND ai_ok IS NULL "
+        f"AND {AI_NOT_PROJECT}", AI_SHELVES).fetchone()["c"]
+    route_n = conn.execute(
+        f"SELECT COUNT(*) c FROM boxes WHERE shelf IN ({ph}) "
+        f"AND tech_checked IS NULL AND {AI_NOT_PROJECT}", AI_SHELVES).fetchone()["c"]
+    dry = _dry_pallets(conn)
+    unformed_n = conn.execute(
+        "SELECT COUNT(*) c FROM boxes WHERE shelf='pallet_step' "
+        "AND pallet_id IS NULL").fetchone()["c"]
+    stars = [r["raw_text"] for r in conn.execute(
+        "SELECT raw_text FROM boxes WHERE shelf='focus' AND starred=1"
+        " AND starred_at IS NOT NULL AND starred_at<=? ORDER BY id", (today,))]
+    scary = conn.execute(
+        "SELECT id, micro FROM boxes WHERE shelf='focus' AND scary=1 "
+        "AND micro IS NOT NULL AND micro<>'' ORDER BY id LIMIT 1").fetchone()
     q = []
     if blocked:
         q.append({"act": "⛔ Разблокировать склад: разобрать входящие",
@@ -2059,6 +2416,12 @@ def whatnow():
         q.append({"act": f"📥 Разобрать входящие ({counts['inbox']})",
                   "why": "один вопрос на экран, вопросы сами разложат всё по полкам",
                   "url": "/terminal"})
+    if scary:
+        # Fogg: способность важнее мотивации. У страшной задачи призыв - не она сама,
+        # а два первых шага; целиком её никто начинать не хочет (коробка #311)
+        q.append({"act": "▶ 2 минуты: " + (scary["micro"] or "")[:50],
+                  "why": "не задача целиком - только два первых шага, потом можно бросить",
+                  "url": "/focus_page#micro"})
     if glow_n:
         q.append({"act": f"✨ Проверить ожидание ({glow_n})",
                   "why": "коробки загорелись: пора чекнуть, дождался ли",
@@ -2106,13 +2469,160 @@ def whatnow():
         q.append({"act": f"🎯 Работать фокус ({counts['focus']})",
                   "why": "одна задача на экране — её и делай",
                   "url": "/focus_page"})
-    q.append({"act": "☕ Кофейня: пойти отдохнуть",
-              "why": "встань из-за стола — дожитый отдых даёт очки",
-              "url": "/world#rest", "calm": True})
+    rest = {"act": "☕ Кофейня: пойти отдохнуть",
+            "why": "встань из-за стола — дожитый отдых даёт очки",
+            "url": "/world#rest", "calm": True}
+    if _day_load(conn)["pct"] >= LOAD_TIRED_PCT:
+        # индикатор нагрузки НИЧЕГО не запрещает (энергия как информация, не как
+        # наказание): просто поднимает отдых наверх очереди
+        q.insert(0, rest)
+    else:
+        q.append(rest)
     q.append({"act": "☕ Всё разобрано — отдых тоже работа",
               "why": "можно закинуть что-то во входящие или просто выдохнуть",
               "url": "/focus_page", "calm": True})
-    return {"queue": q}
+    return q
+
+
+@app.get("/whatnow")
+def whatnow():
+    with db() as conn:
+        return {"queue": _whatnow(conn)}
+
+
+def _day_load(conn):
+    """Энергия как ИНФОРМАЦИЯ, а не как наказание.
+
+    Классическая механика «жизней» запрещает работать при нуле - но Fogg говорит
+    ровно обратное: когда мотивации мало, порог надо СНИЖАТЬ. Поэтому здесь
+    только индикатор натиканного за день времени; он ничего не блокирует."""
+    today = game_today().isoformat()
+    s = conn.execute(
+        "SELECT COALESCE(SUM(elapsed_seconds),0) s FROM timer_sessions "
+        "WHERE date(started_at)=?", (today,)).fetchone()["s"]
+    minutes = round(s / 60)
+    return {"minutes": minutes, "pct": min(100, round(100 * minutes / LOAD_FULL_MIN))}
+
+
+def _hub_bars(conn):
+    """Зейгарник: незавершённое надо ВИДЕТЬ. Полоски с 0% не показываются -
+    пустая шкала обесточивает, вместо неё пустое состояние с призывом."""
+    today = game_today().isoformat()
+    counts = dict(conn.execute("SELECT shelf, COUNT(*) FROM boxes GROUP BY shelf").fetchall())
+    triaged = conn.execute(
+        "SELECT COUNT(*) c FROM moves WHERE from_shelf='inbox' AND date(at)=?",
+        (today,)).fetchone()["c"]
+    done_today = conn.execute(
+        "SELECT COUNT(*) c FROM moves WHERE to_shelf='done' AND date(at)=?",
+        (today,)).fetchone()["c"]
+    days = _streak_len(_streak_rows(conn), game_today())
+    return {
+        "inbox": {"done": triaged, "total": triaged + counts.get("inbox", 0)},
+        "focus": {"done": done_today, "total": done_today + counts.get("focus", 0)},
+        "streak": {"done": days % STREAK_FREEZE_EVERY, "total": STREAK_FREEZE_EVERY},
+    }
+
+
+# ─── 💡 Подсказки вместо тура ─────────────────────────────────────────────────
+# Полноценный онбординг единственному человеку, который сам построил склад,
+# бесполезен. Нужно другое: объяснить НОВУЮ механику ровно один раз.
+TIPS = {
+    "streak": "🔥 Появилась серия дней. Любое движение коробки засчитывает день. "
+              "Каждые 7 дней копится страховка - пропуск закроется сам.",
+    "micro": "😰 У страшной задачи теперь есть кнопка «2 минуты»: очко даётся за "
+             "начало, а не за завершение. Бросить через две минуты - тоже победа.",
+    "recognize": "👁 Коробка, которую ты видишь второй раз, показывает счётчик "
+                 "заходов и две быстрые кнопки: «уже неактуально» и «я знаю решение».",
+    "roll": "📦 В сундуке появился ящик: крутишь раз в день, выпадает случайная "
+            "награда из твоего же пула, открыть можно через 45 минут.",
+}
+
+
+def unseen_tips(conn):
+    return [k for k in TIPS if not get_flag(conn, f"seen_{k}")]
+
+
+class SeenTip(BaseModel):
+    key: str
+
+
+@app.post("/seen")
+def seen_tip(s: SeenTip):
+    with db() as conn:
+        set_flag(conn, f"seen_{s.key}", "1")
+    return {"ok": True}
+
+
+@app.get("/streak")
+def streak_get():
+    with db() as conn:
+        return streak_state(conn)
+
+
+@app.post("/streak_repair")
+def streak_repair():
+    """Клапан для больного дня: один клик, без торга с собой и без цены.
+
+    Тревожность берётся не из счётчика, а из ощущения, что обрыв необратим."""
+    with db() as conn:
+        broken = get_flag(conn, "streak_broken_at")
+        if not broken:
+            raise HTTPException(400, "серия не рвалась")
+        last = get_flag(conn, "last_streak_repair")
+        if last and (game_today() - date.fromisoformat(last)).days < STREAK_REPAIR_DAYS:
+            raise HTTPException(409, f"прощение доступно раз в {STREAK_REPAIR_DAYS} дней")
+        day = date.fromisoformat(broken)
+        today = game_today()
+        while day <= today:
+            conn.execute("INSERT OR IGNORE INTO streak_days(day,kind) VALUES(?, 'repair')",
+                         (day.isoformat(),))
+            day += timedelta(days=1)
+        set_flag(conn, "last_streak_repair", today.isoformat())
+        set_flag(conn, "streak_broken_at", "")
+        set_flag(conn, "streak_broken_had", "0")
+        log_event(conn, "streak_repair", frm=broken)
+        return streak_state(conn)
+
+
+@app.get("/hub_summary")
+def hub_summary():
+    """Всё, что нужно хабу, одним запросом.
+
+    Было девять последовательных fetch - главная кнопка висела в «…» всё это
+    время. Порог входа = самый большой дефект «способности» по Fogg, а хаб -
+    самая посещаемая страница склада."""
+    with db() as conn:
+        counts = dict(conn.execute(
+            "SELECT shelf, COUNT(*) FROM boxes GROUP BY shelf").fetchall())
+        blocked = get_flag(conn, "blocked")
+        total = conn.execute("SELECT COALESCE(SUM(amount),0) s FROM points").fetchone()["s"]
+        today = game_today().isoformat()
+        stars = [{"id": r["id"], "text": r["raw_text"]} for r in conn.execute(
+            "SELECT id, raw_text FROM boxes WHERE shelf='focus' AND starred=1"
+            " AND starred_at IS NOT NULL AND starred_at<=? ORDER BY id", (today,))]
+        vacation_until = get_flag(conn, "vacation_until")
+        prize = conn.execute(
+            "SELECT id, opens_at FROM chest WHERE kind='prize' AND bought_at IS NULL"
+            " ORDER BY id LIMIT 1").fetchone()
+        return {
+            "counts": counts,
+            "blocked": bool(blocked), "blocked_since": blocked or None,
+            "points_total": total,
+            "call_at": CALL_AT, "truck_at": TRUCK_AT,
+            "review_due": _review_due(conn),
+            "stars": stars,
+            "rest_until": get_flag(conn, "rest_until") or None,
+            "vacation_until": vacation_until or None,
+            "on_vacation": bool(vacation_until) and today <= vacation_until,
+            "dry_pallets": _dry_pallets(conn),
+            "queue": _whatnow(conn),
+            "streak": streak_state(conn),
+            "bars": _hub_bars(conn),
+            "load": _day_load(conn),
+            "yt": _yt_state(conn),
+            "prize": ({"id": prize["id"], "opens_at": prize["opens_at"]} if prize else None),
+            "tips": unseen_tips(conn),
+        }
 
 
 @app.get("/state")
@@ -2610,7 +3120,9 @@ def rack_review_finish(m: RackReviewFinish):
 
 class ChestAdd(BaseModel):
     title: str
-    cost: int
+    cost: int = 0
+    kind: str = "fixed"      # fixed = магазин, pool = кандидат для розыгрыша
+    rarity: int = 1          # вес в розыгрыше: чем больше, тем чаще выпадает
 
 
 class ChestBuy(BaseModel):
@@ -2628,25 +3140,81 @@ def chest_list():
             "SELECT COALESCE(SUM(amount),0) s FROM points").fetchone()["s"]
         items = [dict(r) for r in conn.execute(
             "SELECT * FROM chest ORDER BY bought_at IS NOT NULL, created_at DESC")]
-    return {"items": items, "points_total": total}
+        rolled = get_flag(conn, "last_roll") == game_today().isoformat()
+    return {"items": items, "points_total": total, "rolled_today": rolled,
+            "roll_cost": ROLL_COST, "roll_delay_min": ROLL_DELAY_MIN}
 
 
 @app.post("/chest_add")
 def chest_add(c: ChestAdd):
     title = c.title.strip()
-    if not title or c.cost < 1:
+    kind = c.kind if c.kind in ("fixed", "pool") else "fixed"
+    if not title or (kind == "fixed" and c.cost < 1):
         raise HTTPException(400, "title required, cost >= 1")
     with db() as conn:
-        cur = conn.execute("INSERT INTO chest(title, cost) VALUES(?,?)", (title, c.cost))
-        log_event(conn, "chest_add", chest_id=cur.lastrowid, title=title, cost=c.cost)
+        cur = conn.execute("INSERT INTO chest(title, cost, kind, rarity) VALUES(?,?,?,?)",
+                           (title, max(0, c.cost), kind, max(1, c.rarity)))
+        log_event(conn, "chest_add", chest_id=cur.lastrowid, title=title,
+                  cost=c.cost, chest_kind=kind, rarity=c.rarity)
     return {"ok": True, "id": cur.lastrowid}
+
+
+@app.post("/chest_roll")
+def chest_roll():
+    """📦 Переменное вознаграждение - но с тремя жёсткими предохранителями.
+
+    (1) Пустышек не бывает: случайность в том, ЧТО выпало, а не выпало ли.
+        Каждый исход - награда, которую Ярослав сам себе выписал.
+    (2) Один ящик в игровые сутки. Автомату нужна безлимитная ручка; лимит
+        убивает компульсию, оставляя предвкушение.
+    (3) Открытие через ROLL_DELAY_MIN минут, и НЕТ кнопки «открыть раньше за ⭐»
+        - это ровно тот тёмный паттерн, только валюта здесь своё же внимание."""
+    with db() as conn:
+        if get_flag(conn, "last_roll") == game_today().isoformat():
+            raise HTTPException(409, "один ящик в день")
+        pool = [dict(r) for r in conn.execute(
+            "SELECT * FROM chest WHERE kind='pool'")]
+        if len(pool) < ROLL_POOL_MIN:
+            raise HTTPException(400, f"в пуле меньше {ROLL_POOL_MIN} наград")
+        total = conn.execute(
+            "SELECT COALESCE(SUM(amount),0) s FROM points").fetchone()["s"]
+        if total < ROLL_COST:
+            raise HTTPException(402, f"not enough points: need {ROLL_COST}, have {total}")
+        won = random.choices(pool, weights=[max(1, p["rarity"]) for p in pool])[0]
+        award(conn, -ROLL_COST, "ящик")
+        opens = (datetime.now() + timedelta(minutes=ROLL_DELAY_MIN)).strftime("%Y-%m-%d %H:%M:%S")
+        cur = conn.execute(
+            "INSERT INTO chest(title, cost, kind, opens_at, source_id) "
+            "VALUES(?,0,'prize',?,?)", (won["title"], opens, won["id"]))
+        set_flag(conn, "last_roll", game_today().isoformat())
+        log_event(conn, "chest_roll", cost=ROLL_COST, pool_n=len(pool),
+                  prize_id=cur.lastrowid)
+    # что именно выпало - НЕ отдаём: незакрытая петля и есть механика Зейгарника
+    return {"ok": True, "opens_at": opens, "delay_min": ROLL_DELAY_MIN}
+
+
+@app.post("/chest_open")
+def chest_open():
+    with db() as conn:
+        row = conn.execute(
+            "SELECT * FROM chest WHERE kind='prize' AND bought_at IS NULL "
+            "ORDER BY id LIMIT 1").fetchone()
+        if not row:
+            raise HTTPException(404, "ящика в пути нет")
+        if row["opens_at"] and datetime.now().strftime("%Y-%m-%d %H:%M:%S") < row["opens_at"]:
+            raise HTTPException(409, "ещё рано")
+        conn.execute("UPDATE chest SET bought_at=datetime('now','localtime') WHERE id=?",
+                     (row["id"],))
+        log_event(conn, "chest_open", chest_id=row["id"], title=row["title"])
+    return {"ok": True, "title": row["title"]}
 
 
 @app.post("/chest_buy")
 def chest_buy(c: ChestBuy):
     with db() as conn:
         row = conn.execute(
-            "SELECT * FROM chest WHERE id=? AND bought_at IS NULL", (c.id,)).fetchone()
+            "SELECT * FROM chest WHERE id=? AND bought_at IS NULL AND kind='fixed'",
+            (c.id,)).fetchone()
         if not row:
             raise HTTPException(404, "no such chest item or already bought")
         total = conn.execute(
@@ -2758,6 +3326,13 @@ def vacation_start(body: dict):
     until = (game_today() + timedelta(days=days)).isoformat()
     with db() as conn:
         set_flag(conn, "vacation_until", until)
+        # серия не должна рваться из-за отпуска: размечаем дни заранее, тогда
+        # streak_settle просто не увидит дыры и страховки останутся целы
+        d = game_today()
+        while d.isoformat() <= until:
+            conn.execute("INSERT OR IGNORE INTO streak_days(day,kind) VALUES(?, 'vacation')",
+                         (d.isoformat(),))
+            d += timedelta(days=1)
         log_event(conn, "vacation_start", days=days, until=until)
     return {"ok": True, "until": until}
 
@@ -2767,6 +3342,8 @@ def vacation_end():
     """Прервать отпуск досрочно."""
     with db() as conn:
         set_flag(conn, "vacation_until", "")
+        conn.execute("DELETE FROM streak_days WHERE kind='vacation' AND day>?",
+                     (game_today().isoformat(),))
         log_event(conn, "vacation_end")
     return {"ok": True}
 
@@ -2814,21 +3391,25 @@ def events_list(limit: int = 200, kind: str | None = None):
     return [dict(r) for r in rows]
 
 
-@app.get("/yt")
-def yt_state():
+def _yt_state(conn):
     """🎬 кассовый аппарат перекусов: баланс + сегодняшний оборот."""
     today = game_today().isoformat()
-    with db() as conn:
-        bal = yt_balance(conn)
-        earned = conn.execute(
-            "SELECT COALESCE(SUM(delta),0) s FROM yt_ledger "
-            "WHERE delta>0 AND date(at)=?", (today,)).fetchone()["s"]
-        spent = conn.execute(
-            "SELECT COALESCE(SUM(-delta),0) s FROM yt_ledger "
-            "WHERE delta<0 AND date(at)=?", (today,)).fetchone()["s"]
+    bal = yt_balance(conn)
+    earned = conn.execute(
+        "SELECT COALESCE(SUM(delta),0) s FROM yt_ledger "
+        "WHERE delta>0 AND date(at)=?", (today,)).fetchone()["s"]
+    spent = conn.execute(
+        "SELECT COALESCE(SUM(-delta),0) s FROM yt_ledger "
+        "WHERE delta<0 AND date(at)=?", (today,)).fetchone()["s"]
     return {"balance": round(bal, 1), "per_done": YT_PER_DONE, "cap": YT_CAP,
             "today_earned": round(earned, 1), "today_spent": round(spent, 1),
             "watching": _yt_watching}
+
+
+@app.get("/yt")
+def yt_state():
+    with db() as conn:
+        return _yt_state(conn)
 
 
 @app.post("/heartbeat")
@@ -3131,8 +3712,399 @@ def get_flag_standalone(key):
         return get_flag(conn, key)
 
 
+# ─────────────────────────── Режим «Фокус» ───────────────────────────
+# Челлендж на силу воли, а не пассивная блокировка.
+#
+# 1) ЧЕЛЛЕНДЖ: человек ставит себе цель «продержусь N минут в фокусе» и жмёт
+#    старт. Пока идёт — ActivityWatch посекундно отдаёт активное окно {app,title},
+#    сервер сверяет его со списком «залипалок» (focus_distractions). Попал в
+#    залипалку → включается обратный отсчёт (grace). Ушёл вовремя — обошлось.
+#    Досидел до нуля → ПРОИГРЫШ: фокус рвётся, летит уведомление, негативная
+#    мотивация. Досидел цель до конца чисто → победа. После проигрыша — бесплатный
+#    рестарт («ещё раз»). Плюс случайные бонусы за удержание (позитив).
+#
+# 2) ГУБЕРНАТОР ЦИКЛА (всегда включён, независимо от челленджа): у каждой
+#    залипалки-сайта свой цикл «allowed минут можно / cooldown минут закрыто».
+#    В фазу cooldown её домены жёстко режутся в /etc/hosts (для ЛЮБОГО браузера,
+#    IPv4+IPv6). Дефолт для youtube/telegram: 3 мин можно / 10 мин остывание.
+#
+# Источник правды — сервер (флаги + таблица focus_distractions). Оверлей-таймер
+# и уведомления рисует desktop-служба bin/focus-watcher, читая /focus/state.
+
+FOCUS_HOSTS_BEGIN = "# >>> warehouse-focus >>>"
+FOCUS_HOSTS_END = "# <<< warehouse-focus <<<"
+FOCUS_BONUS_MIN, FOCUS_BONUS_MAX = 3, 8   # разброс очков за один бонус
+FOCUS_GRACE_SEC = 30                       # сколько секунд в залипалке до проигрыша
+_focus_lock = threading.Lock()
+# живое состояние надзора (эпоха time.time()); читается в /focus/state
+_focus_watch = {"since": None, "pattern": None, "app": "", "title": ""}
+
+FOCUS_DEFAULTS = [
+    # (pattern, domains, allowed_min, cooldown_min)
+    ("youtube", "youtube.com", 3, 10),
+    ("telegram", "telegram.org,web.telegram.org", 3, 10),
+]
+
+
+def _focus_seed_defaults():
+    with db() as conn:
+        if get_flag(conn, "focus_seeded") == "1":
+            return
+        for pat, dom, al, cd in FOCUS_DEFAULTS:
+            conn.execute(
+                "INSERT OR IGNORE INTO focus_distractions"
+                "(pattern, domains, allowed_min, cooldown_min) VALUES(?,?,?,?)",
+                (pat, dom, al, cd))
+        set_flag(conn, "focus_seeded", "1")
+
+
+def _focus_norm_domain(raw):
+    """Из чего угодно (URL/с www/с путём) — голый домен в нижнем регистре."""
+    d = (raw or "").strip().lower()
+    d = re.sub(r"^[a-z]+://", "", d)
+    d = d.split("/")[0].split("?")[0]
+    d = d.split("@")[-1].split(":")[0]
+    if d.startswith("www."):
+        d = d[4:]
+    return d.strip(".")
+
+
+def _focus_distractions():
+    with db() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT pattern, domains, allowed_min, cooldown_min, added_at "
+            "FROM focus_distractions ORDER BY pattern")]
+
+
+def _cycle_phase(anchor_iso, allowed_min, cooldown_min):
+    """Фаза губернатора: ('open'|'blocked', секунд_до_смены). allowed минут
+    открыто, потом cooldown минут закрыто, по кругу от anchor."""
+    if allowed_min <= 0 or cooldown_min <= 0:
+        return "open", 0
+    try:
+        el = (datetime.now() - datetime.fromisoformat(anchor_iso)).total_seconds()
+    except (ValueError, TypeError):
+        el = 0
+    period = (allowed_min + cooldown_min) * 60
+    pos = el % period
+    if pos < allowed_min * 60:
+        return "open", int(allowed_min * 60 - pos)
+    return "blocked", int(period - pos)
+
+
+def _focus_cycle_block_domains():
+    """Домены, которые ГУБЕРНАТОР должен резать прямо сейчас (фаза cooldown)."""
+    out = []
+    for d in _focus_distractions():
+        if not d["domains"]:
+            continue
+        phase, _ = _cycle_phase(d["added_at"], d["allowed_min"], d["cooldown_min"])
+        if phase == "blocked":
+            for dom in d["domains"].split(","):
+                dom = _focus_norm_domain(dom)
+                if dom:
+                    out.append(dom)
+    return sorted(set(out))
+
+
+def _focus_write_hosts(domains):
+    """Переписать блок warehouse-focus в /etc/hosts (sudo -n cp). Идемпотентно."""
+    hosts = Path("/etc/hosts")
+    try:
+        cur = hosts.read_text()
+    except OSError:
+        return
+    out, skip = [], False
+    for ln in cur.splitlines():
+        s = ln.strip()
+        if s == FOCUS_HOSTS_BEGIN:
+            skip = True
+            continue
+        if s == FOCUS_HOSTS_END:
+            skip = False
+            continue
+        if not skip:
+            out.append(ln)
+    while out and not out[-1].strip():
+        out.pop()
+    if domains:
+        out.append(FOCUS_HOSTS_BEGIN)
+        for d in domains:
+            for host in (d, f"www.{d}"):
+                out.append(f"0.0.0.0 {host}")  # IPv4
+                out.append(f":: {host}")       # IPv6 — иначе уйдёт по AAAA
+        out.append(FOCUS_HOSTS_END)
+    new = "\n".join(out) + "\n"
+    if new == cur:
+        return
+    with _focus_lock:
+        try:
+            tmp = tempfile.NamedTemporaryFile(
+                "w", delete=False, suffix=".hosts", dir="/tmp")
+            tmp.write(new)
+            tmp.close()
+            subprocess.run(["sudo", "-n", "cp", tmp.name, str(hosts)],
+                           timeout=5, check=False)
+            os.unlink(tmp.name)
+        except Exception as e:
+            print("focus hosts write failed:", e)
+
+
+def _aw_current_window():
+    """Последнее событие активного окна из ActivityWatch: {app,title} или None."""
+    try:
+        win_b, _afk = _aw_find_buckets()
+        if not win_b:
+            return None
+        ev = _aw_get(f"buckets/{win_b}/events?limit=1")
+        if ev and isinstance(ev[0].get("data"), dict):
+            return {"app": ev[0]["data"].get("app", ""),
+                    "title": ev[0]["data"].get("title", "")}
+    except Exception:
+        return None
+    return None
+
+
+def _focus_match(win, distractions):
+    """Совпадает ли активное окно с залипалкой → её pattern или None."""
+    if not win:
+        return None
+    hay = f"{win.get('app', '')} {win.get('title', '')}".lower()
+    for d in distractions:
+        if d["pattern"].lower() in hay:
+            return d["pattern"]
+    return None
+
+
+def _focus_reset_watch():
+    with _focus_lock:
+        _focus_watch.update(since=None, pattern=None, app="", title="")
+
+
+def focus_hosts_loop():
+    """Губернатор: держит /etc/hosts в согласии с циклами залипалок."""
+    last = None
+    while True:
+        try:
+            doms = _focus_cycle_block_domains()
+            _focus_write_hosts(doms)
+            if doms != last:
+                last = doms
+        except Exception as e:
+            print("focus hosts loop error:", e)
+        time.sleep(6)
+
+
+def _focus_lose(reason):
+    with db() as conn:
+        set_flag(conn, "focus_on", "0")
+        set_flag(conn, "focus_result", "lost")
+        set_flag(conn, "focus_lost_reason", reason or "")
+        set_flag(conn, "focus_lost_at", datetime.now().isoformat(timespec="seconds"))
+        log_event(conn, "focus_lost", reason=reason)
+    _focus_reset_watch()
+    notify("💀 Фокус сорван", f"Залип в «{reason}» — челлендж проигран.", urgent=True)
+
+
+def _focus_win(target_min):
+    with db() as conn:
+        set_flag(conn, "focus_on", "0")
+        set_flag(conn, "focus_result", "won")
+        log_event(conn, "focus_won", target_min=target_min)
+    _focus_reset_watch()
+    notify("🏆 Челлендж взят!", f"Выдержал {target_min} мин фокуса. Красавчик.")
+
+
+def focus_challenge_loop():
+    """Надзор: пока идёт челлендж — ловит залипание и решает победу/проигрыш."""
+    while True:
+        try:
+            with db() as conn:
+                on = get_flag(conn, "focus_on") == "1"
+                started = get_flag(conn, "focus_started")
+                target_min = int(get_flag(conn, "focus_target_min", "0") or 0)
+            if not on:
+                _focus_reset_watch()
+                time.sleep(1)
+                continue
+            try:
+                elapsed = (datetime.now() - datetime.fromisoformat(started)).total_seconds()
+            except (ValueError, TypeError):
+                elapsed = 0
+            if target_min > 0 and elapsed >= target_min * 60:
+                _focus_win(target_min)
+                time.sleep(1)
+                continue
+            distractions = _focus_distractions()
+            win = _aw_current_window()
+            patt = _focus_match(win, distractions)
+            now = time.time()
+            with _focus_lock:
+                _focus_watch["app"] = (win or {}).get("app", "")
+                _focus_watch["title"] = (win or {}).get("title", "")
+                if patt:
+                    if _focus_watch["since"] is None:
+                        _focus_watch["since"] = now
+                        _focus_watch["pattern"] = patt
+                        notify("⚠ Уходи, иначе проигрыш",
+                               f"«{patt}» — фокус сорвётся через {FOCUS_GRACE_SEC} сек.")
+                    over = now - _focus_watch["since"] >= FOCUS_GRACE_SEC
+                else:
+                    _focus_watch["since"] = None
+                    _focus_watch["pattern"] = None
+                    over = False
+            if patt and over:
+                _focus_lose(patt)
+        except Exception as e:
+            print("focus challenge loop error:", e)
+        time.sleep(1)
+
+
+class FocusStart(BaseModel):
+    target_min: int = 25
+
+
+@app.post("/focus/start")
+def focus_start(s: FocusStart):
+    with db() as conn:
+        set_flag(conn, "focus_on", "1")
+        set_flag(conn, "focus_started", datetime.now().isoformat(timespec="seconds"))
+        set_flag(conn, "focus_target_min", str(max(1, s.target_min)))
+        set_flag(conn, "focus_result", "")
+        set_flag(conn, "focus_lost_reason", "")
+        log_event(conn, "focus_start", target_min=s.target_min)
+    _focus_reset_watch()
+    return {"ok": True}
+
+
+@app.post("/focus/stop")
+def focus_stop():
+    """Ручная остановка: ни победа, ни проигрыш."""
+    with db() as conn:
+        set_flag(conn, "focus_on", "0")
+        set_flag(conn, "focus_result", "")
+        log_event(conn, "focus_stop")
+    _focus_reset_watch()
+    return {"ok": True}
+
+
+class FocusDistraction(BaseModel):
+    pattern: str
+    domains: str = ""
+    allowed_min: int = 0
+    cooldown_min: int = 0
+
+
+@app.post("/focus/distraction")
+def focus_distraction_add(d: FocusDistraction):
+    pat = d.pattern.strip().lower()
+    if not pat:
+        raise HTTPException(400, "нужно слово-метка (например youtube)")
+    doms = ",".join(sorted({_focus_norm_domain(x) for x in d.domains.split(",")
+                            if _focus_norm_domain(x)}))
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO focus_distractions(pattern, domains, allowed_min, cooldown_min) "
+            "VALUES(?,?,?,?) ON CONFLICT(pattern) DO UPDATE SET "
+            "domains=excluded.domains, allowed_min=excluded.allowed_min, "
+            "cooldown_min=excluded.cooldown_min",
+            (pat, doms, max(0, d.allowed_min), max(0, d.cooldown_min)))
+    return {"ok": True, "pattern": pat}
+
+
+class FocusPattern(BaseModel):
+    pattern: str
+
+
+@app.post("/focus/distraction_del")
+def focus_distraction_del(p: FocusPattern):
+    with db() as conn:
+        conn.execute("DELETE FROM focus_distractions WHERE pattern=?",
+                     (p.pattern.strip().lower(),))
+    return {"ok": True}
+
+
+@app.post("/focus/bonus")
+def focus_bonus():
+    """Watcher зовёт по случайному таймеру — бонус за удержание фокуса."""
+    with db() as conn:
+        if get_flag(conn, "focus_on") != "1":
+            return {"ok": False, "amount": 0}
+        amount = random.randint(FOCUS_BONUS_MIN, FOCUS_BONUS_MAX)
+        award(conn, amount, "🎯 бонус за фокус")
+        log_event(conn, "focus_bonus", amount=amount)
+    return {"ok": True, "amount": amount}
+
+
+class PinTask(BaseModel):
+    text: str = ""
+
+
+@app.post("/pin")
+def pin_task(p: PinTask):
+    """Вывесить задачу поверх всех окон (десктопный оверлей) — просто текст-напоминание."""
+    with db() as conn:
+        set_flag(conn, "pinned_task", p.text.strip())
+    return {"ok": True}
+
+
+@app.get("/pin")
+def pin_get():
+    with db() as conn:
+        return {"text": get_flag(conn, "pinned_task")}
+
+
+@app.get("/focus/state")
+def focus_state():
+    with db() as conn:
+        on = get_flag(conn, "focus_on") == "1"
+        started = get_flag(conn, "focus_started")
+        target_min = int(get_flag(conn, "focus_target_min", "0") or 0)
+        result = get_flag(conn, "focus_result")
+        lost_reason = get_flag(conn, "focus_lost_reason")
+        bonus_today = conn.execute(
+            "SELECT COALESCE(SUM(amount),0) s FROM points "
+            "WHERE reason='🎯 бонус за фокус' AND date(at)=date('now','localtime')"
+        ).fetchone()["s"]
+    elapsed = 0
+    if on and started:
+        try:
+            elapsed = int((datetime.now() - datetime.fromisoformat(started)).total_seconds())
+        except (ValueError, TypeError):
+            elapsed = 0
+    with _focus_lock:
+        w = dict(_focus_watch)
+    distraction = None
+    if w["since"] is not None:
+        distraction = {"active": True, "pattern": w["pattern"],
+                       "since_epoch": w["since"],
+                       "deadline_epoch": w["since"] + FOCUS_GRACE_SEC}
+    dl = []
+    for d in _focus_distractions():
+        phase, left = _cycle_phase(d["added_at"], d["allowed_min"], d["cooldown_min"])
+        dl.append({"pattern": d["pattern"], "domains": d["domains"],
+                   "allowed_min": d["allowed_min"], "cooldown_min": d["cooldown_min"],
+                   "cycle_phase": phase, "cycle_left": left})
+    return {"on": on, "started": started, "elapsed": elapsed,
+            "target_min": target_min, "target_sec": target_min * 60,
+            "result": result, "lost_reason": lost_reason,
+            "grace_sec": FOCUS_GRACE_SEC,
+            "now_epoch": time.time(),
+            "window": {"app": w["app"], "title": w["title"]},
+            "distraction": distraction,
+            "distractions": dl, "bonus_today": bonus_today}
+
+
+@app.get("/focus_mode")
+def focus_mode_page():
+    return FileResponse(Path(__file__).parent / "focus_mode.html")
+
+
 if __name__ == "__main__":
     init_db()
+    _focus_seed_defaults()
     threading.Thread(target=scheduler, daemon=True).start()
     threading.Thread(target=yt_watcher, daemon=True).start()
+    threading.Thread(target=focus_hosts_loop, daemon=True).start()
+    threading.Thread(target=focus_challenge_loop, daemon=True).start()
     uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")

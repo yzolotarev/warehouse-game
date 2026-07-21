@@ -51,6 +51,63 @@
     impact(progress);             // визуальный удар — всегда: он и есть прогресс-сигнал
   };
 
+  // ── ✨ Косметический XP: вылетающие числа, как в кликерах ──
+  // ⚠ Это НЕ очки склада. Очки меряют энергию человека и потому редки; если
+  // сыпать их на каждую коробку, экономика обесценится за неделю (см. шапку файла).
+  // XP тут — чистый аттракцион: нигде не хранится, ни на что не влияет, живёт
+  // 900мс и исчезает. Его работа — дать глазу «попадание» на КАЖДОЕ действие,
+  // чего осознанно не делают очки.
+  // Числа намеренно рваные (+17, +43), а не круглые: ровные суммы читаются как
+  // тариф, рваные — как выигрыш.
+  const XP_TIERS=[               // порог → цвет; крупная награда светится ярче
+    [50,'#fbbf24','#78350f'],    // золото — редкий куш
+    [35,'#c084fc','#3b0764'],    // фиолет
+    [20,'#4ade80','#052e16'],    // зелень
+    [0 ,'#60a5fa','#0c2d5e'],    // спокойный синий — мелочь
+  ];
+  // Углы карточки: числа летят ИЗ разных мест, чтобы глаз не привыкал к одной точке.
+  // По горизонтали вынесены ЗА края карточки: изнутри они накрывали кнопки ответа
+  // ровно в тот момент, когда по ним целятся мышью.
+  const XP_CORNERS=[[-.04,.10,-1,-1],[1.04,.10,1,-1],[-.04,.86,-1,1],[1.04,.86,1,1]];
+  let lastCorner=-1;
+  // juiceXP(amount, anchorEl) — anchorEl задаёт рамку вылета (обычно карточка разбора)
+  window.juiceXP=function(amount,anchorEl){
+    amount=Math.max(1,Math.round(amount));
+    const tier=XP_TIERS.find(t=>amount>=t[0]);
+    let box=(anchorEl||document.body).getBoundingClientRect();
+    // Карточки может не быть на экране (последняя коробка разобрана, блок скрыт) —
+    // тогда rect нулевой и все числа сваливаются кучей в левый верхний угол.
+    // Подменяем рамку на центр экрана: награда за ПОСЛЕДНЮЮ коробку самая ценная.
+    if(box.width<40||box.height<40)
+      box={left:innerWidth*.25,top:innerHeight*.22,width:innerWidth*.5,height:innerHeight*.4};
+    const c=pick(XP_CORNERS,lastCorner);lastCorner=c;
+    const[fx,fy,dx,dy]=XP_CORNERS[c];
+    const jit=(n)=>(Math.random()-.5)*n;
+    // clamp по экрану: на узком окне вынос за край карточки уехал бы за видимую область
+    const x=Math.min(Math.max(box.left+box.width*fx+jit(40),52),innerWidth-52);
+    const y=Math.min(Math.max(box.top+box.height*fy+jit(30),40),innerHeight-40);
+    const el=document.createElement('div');
+    el.textContent='+'+amount+' XP';
+    el.style.cssText=`position:fixed;left:${x}px;top:${y}px;z-index:9999;pointer-events:none;`
+      +`font-size:${amount>=50?30:amount>=35?25:amount>=20?21:18}px;font-weight:800;`
+      +`color:${tier[1]};text-shadow:0 2px 10px ${tier[2]},0 0 22px ${tier[1]}55;`
+      +'transform:translate(-50%,-50%) scale(.4);opacity:0;will-change:transform,opacity;';
+    document.body.appendChild(el);
+    // Три фазы: резкий «выброс» (глаз ловит появление) → ПАУЗА (число читается,
+    // ради неё всё и затевалось: непрочитанная награда дофамина не даёт) → медленный
+    // уплыв вверх-наружу. Гашение на ease-in: первую половину уплыва число ещё яркое.
+    requestAnimationFrame(()=>{
+      el.style.transition='transform .16s cubic-bezier(.2,1.6,.4,1),opacity .12s ease-out';
+      el.style.transform='translate(-50%,-50%) scale(1)';el.style.opacity='1';
+      setTimeout(()=>{
+        el.style.transition='transform 1.5s cubic-bezier(.3,.5,.2,1),opacity 1.5s ease-in';
+        el.style.transform=`translate(-50%,-50%) translate(${dx*46}px,${dy*20-64}px) scale(.92)`;
+        el.style.opacity='0';
+        setTimeout(()=>el.remove(),1550);
+      },620);   // пауза висения - столько глаз тратит, чтобы считать двузначное число
+    });
+  };
+
   // ── 🏆 Маленькая победа: тост снизу справа + короткая фанфара ──
   // juiceWin('Фокус протегирован!') — зовут конвейеры на закрытии этапа
   window.juiceWin=function(text){

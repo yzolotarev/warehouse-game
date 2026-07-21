@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<link rel="icon" href="/assets/favicon.png">
+<meta charset="utf-8">
+<link rel="stylesheet" href="/style.css">
+<script src="/theme.js"></script><script src="/welcome.js"></script><script src="/i18n.js"></script><script src="/storozh.js"></script><script src="/ambient.js"></script>
+<title>🎯 Режим Фокус</title>
+<style>
+  html,body{margin:0;min-height:100%;display:flex;flex-direction:column;align-items:center;overflow:auto}
+  #wrap{width:min(560px,94vw);padding:26px 0}
+  h1{margin:0}
+  #sub{margin:4px 0 20px;color:var(--dim);font-size:13px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:18px;margin-bottom:14px;box-shadow:var(--card-shadow)}
+  .big{text-align:center}
+  #timer{font-size:40px;font-weight:700;font-variant-numeric:tabular-nums;margin:6px 0 2px}
+  .goal{font-size:13px;color:var(--dim)}
+  .bar{height:8px;background:var(--line);border-radius:4px;overflow:hidden;margin:12px 0 4px}
+  .bar>i{display:block;height:100%;background:var(--accent);border-radius:4px;transition:width .4s}
+  .now{font-size:12px;color:var(--dim);margin-top:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .lbl{font-size:11px;color:var(--dim);letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px}
+  .goalset{display:flex;gap:10px;align-items:center;justify-content:center;font-size:15px;margin:6px 0 14px}
+  .goalset input{width:70px;padding:8px;border-radius:8px;border:1px solid var(--line);
+    background:var(--bg);color:var(--fg);text-align:center;font-size:16px}
+  #startBtn{font-size:19px;padding:15px 44px;border-radius:12px;cursor:pointer;
+    border:2px solid var(--accent);background:var(--accent);color:#fff;font-weight:600}
+  .stopBtn{margin-top:14px}
+  /* тревога */
+  .alarm{border-color:var(--danger)!important;background:var(--danger-soft)!important}
+  .alarm #timer{color:var(--danger)}
+  .alarmt{font-size:15px;color:var(--danger);font-weight:600;margin-bottom:4px}
+  /* итоги */
+  .verdict{font-size:34px;font-weight:700;margin:4px 0}
+  .lost .verdict{color:var(--danger)}
+  .won .verdict{color:var(--accent)}
+  /* список залипалок */
+  .dis{border:1px solid var(--line);border-radius:8px;padding:9px 11px;margin-bottom:7px;font-size:14px}
+  .dis .top{display:flex;align-items:center;gap:8px}
+  .dis .pat{flex:1;font-weight:600}
+  .dis .ph{font-size:11px;padding:1px 7px;border-radius:10px;border:1px solid var(--line);color:var(--dim)}
+  .dis .ph.blocked{color:var(--danger);border-color:var(--danger)}
+  .dis .ph.open{color:var(--accent);border-color:var(--accent)}
+  .dis .cyc{font-size:12px;color:var(--dim);margin-top:5px;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+  .dis .cyc input{width:46px;padding:3px;border-radius:5px;border:1px solid var(--line);
+    background:var(--bg);color:var(--fg);text-align:center}
+  .dis button{padding:2px 9px;font-size:13px}
+  .addrow{display:flex;gap:8px;margin-top:10px}
+  .addrow input{flex:1;padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--fg)}
+  .hint{font-size:12px;color:var(--dim);margin-top:8px}
+  a.back{font-size:13px;text-decoration:none;display:block;text-align:center;margin-top:20px}
+  a.tasks{display:block;text-align:center;text-decoration:none;font-size:14px;font-weight:600;
+    padding:11px 14px;border-radius:10px;border:1px solid var(--accent);color:var(--accent);
+    background:var(--accent-soft);margin-bottom:14px}
+</style>
+</head>
+<body><div id="wrap">
+  <h1>🎯 Режим Фокус</h1>
+  <div id="sub">челлендж на силу воли · надзор через ActivityWatch · залипнешь — проигрыш</div>
+
+  <a class="tasks" href="/focus_page">📋 Список задач — смотреть и делать</a>
+
+  <div id="main"></div>
+
+  <div class="card">
+    <div class="lbl">Залипалки — за ними следит надзор</div>
+    <div id="disList"></div>
+    <div class="addrow">
+      <input id="newPat" placeholder="слово-метка, напр. reddit" onkeydown="if(event.key==='Enter')addDis()">
+      <button class="b-primary" onclick="addDis()">＋ Добавить</button>
+    </div>
+    <div class="hint">Метка ищется в названии активного окна/приложения. Домены (через
+      запятую) режутся в /etc/hosts по циклу «можно/остывание» — для любого браузера.</div>
+  </div>
+
+  <a class="back" href="/">← в прихожую склада</a>
+</div>
+<script>
+"use strict";
+const $=s=>document.querySelector(s);
+async function api(p,body){const r=await fetch(p,body!==undefined?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});if(!r.ok)throw new Error((await r.json()).detail||r.status);return r.json()}
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
+function fmt(sec){sec=Math.max(0,Math.round(sec));const h=Math.floor(sec/3600),m=Math.floor(sec%3600/60),s=sec%60;
+  return (h?h+':'+String(m).padStart(2,'0'):m)+':'+String(s).padStart(2,'0')}
+let ST={on:false},lastTarget=25;
+async function refresh(){
+  ST=await api('/focus/state');
+  if(ST.target_min)lastTarget=ST.target_min;
+  renderMain();renderDis(ST.distractions||[]);
+}
+function renderMain(){
+  const m=$('#main');
+  if(ST.on){
+    const d=ST.distraction;
+    if(d&&d.active){
+      const left=d.deadline_epoch-Date.now()/1000;
+      m.className='';
+      m.innerHTML=`<div class="card big alarm">
+        <div class="alarmt">⚠ Ты в «${esc(d.pattern)}» — уходи!</div>
+        <div id="timer">${fmt(left)}</div>
+        <div class="goal">до срыва фокуса. Вернись к делу — отсчёт сбросится.</div>
+        <button class="b-sec stopBtn" onclick="stop()">Сдаться (стоп)</button>
+      </div>`;
+      return;
+    }
+    const pct=ST.target_sec?Math.min(100,ST.elapsed/ST.target_sec*100):0;
+    const win=ST.window&&(ST.window.title||ST.window.app);
+    m.innerHTML=`<div class="card big">
+      <div id="timer">${fmt(ST.elapsed)}</div>
+      <div class="goal">цель ${ST.target_min} мин · 🎁 бонусов сегодня +${ST.bonus_today}</div>
+      <div class="bar"><i style="width:${pct}%"></i></div>
+      ${win?`<div class="now">сейчас: ${esc(win)}</div>`:''}
+      <button class="b-sec stopBtn" onclick="stop()">Стоп</button>
+    </div>`;
+    return;
+  }
+  // не идёт: итог прошлого + постановка нового
+  let head='';
+  if(ST.result==='lost')head=`<div class="lost"><div class="verdict">💀 Проигрыш</div>
+    <div class="goal">залип в «${esc(ST.lost_reason||'')}». Соберись и вперёд.</div></div>`;
+  else if(ST.result==='won')head=`<div class="won"><div class="verdict">🏆 Взято!</div>
+    <div class="goal">челлендж пройден чисто.</div></div>`;
+  m.innerHTML=`<div class="card big">
+    ${head}
+    <div class="goalset">Продержусь <input id="tgt" type="number" min="1" value="${lastTarget}"> минут</div>
+    <button id="startBtn" onclick="start()">${ST.result==='lost'?'↻ Ещё раз':'▶ Начать челлендж'}</button>
+  </div>`;
+}
+function renderDis(list){
+  const el=$('#disList');
+  if(!list.length){el.innerHTML='<div class="hint">пусто — надзору не за чем следить</div>';return}
+  el.innerHTML=list.map(d=>{
+    const cyc=d.cooldown_min>0?
+      `<span class="ph ${d.cycle_phase}">${d.cycle_phase==='blocked'?'🚫 закрыт '+fmt(d.cycle_left):'открыт '+fmt(d.cycle_left)}</span>`:'';
+    return `<div class="dis"><div class="top">
+      <span class="pat">🚫 ${esc(d.pattern)}</span>${cyc}
+      <button class="b-ghost" onclick="delDis('${esc(d.pattern)}')">✕</button></div>
+      <div class="cyc">домены <input value="${esc(d.domains||'')}" onchange="saveDis('${esc(d.pattern)}',this.closest('.dis'))" style="width:150px">
+        · можно <input type="number" min="0" value="${d.allowed_min}" data-f="allowed" onchange="saveDis('${esc(d.pattern)}',this.closest('.dis'))">
+        / остыв. <input type="number" min="0" value="${d.cooldown_min}" data-f="cooldown" onchange="saveDis('${esc(d.pattern)}',this.closest('.dis'))"> мин</div>
+    </div>`;
+  }).join('');
+}
+async function start(){
+  const t=+($('#tgt')||{}).value||lastTarget;
+  await api('/focus/start',{target_min:t});refresh();
+}
+async function stop(){await api('/focus/stop',{});refresh();}
+async function addDis(){
+  const v=$('#newPat').value.trim();if(!v)return;
+  await api('/focus/distraction',{pattern:v});$('#newPat').value='';refresh();
+}
+async function delDis(p){await api('/focus/distraction_del',{pattern:p});refresh();}
+async function saveDis(p,row){
+  const doms=row.querySelector('.cyc input[style]').value;
+  const al=+row.querySelector('[data-f=allowed]').value||0;
+  const cd=+row.querySelector('[data-f=cooldown]').value||0;
+  await api('/focus/distraction',{pattern:p,domains:doms,allowed_min:al,cooldown_min:cd});refresh();
+}
+refresh();
+setInterval(()=>{
+  // во время челленджа и тревоги тикаем часто и локально, иначе реже
+  if(ST.on){
+    if(ST.distraction&&ST.distraction.active){
+      const left=ST.distraction.deadline_epoch-Date.now()/1000;
+      const t=$('#timer');if(t)t.textContent=fmt(left);
+      if(left<=0)refresh();
+    }else{const t=$('#timer');if(t)t.textContent=fmt(++ST.elapsed);}
+  }
+},1000);
+setInterval(refresh,3000);
+</script>
+</body>
+</html>
