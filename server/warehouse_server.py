@@ -211,6 +211,10 @@ YT_CAP = 45               # потолок накоплений (копить б
 YT_NUDGE_COOLDOWN = 300   # сек между нуджами «кредит кончился»
 AW_URL = os.environ.get("WAREHOUSE_AW", "http://localhost:5600/api/0")
 YT_TITLE_RE = re.compile(r"youtube|twitch", re.IGNORECASE)
+# «Залипание» в браузере, что жжёт кредит и крутит цикл 3/15: ютуб/твич + телеграм-веб
+# + rutube/vk-видео. Телеграм считаем ТОЛЬКО в браузере (десктоп-клиент = связь, не залип).
+BROWSER_APP_RE = re.compile(r"firefox|chrome|chromium|tor browser|opera|brave", re.IGNORECASE)
+DISTRACT_TITLE_RE = re.compile(r"youtube|twitch|telegram|rutube|vk видео|vkvideo", re.IGNORECASE)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS boxes(
@@ -3574,8 +3578,11 @@ def yt_watcher():
             age = (datetime.now(ts.tzinfo) - ts).total_seconds() - wev[0]["duration"]
             fresh_not_afk = (age < 3 * tick
                              and aev[0]["data"].get("status") == "not-afk")
-            win_yt = bool(fresh_not_afk
-                          and YT_TITLE_RE.search(wev[0]["data"].get("title", "")))
+            # активное окно = браузер с залип-сайтом (ютуб/телеграм-веб/rutube/vk)
+            app = wev[0]["data"].get("app", "")
+            title = wev[0]["data"].get("title", "")
+            win_yt = bool(fresh_not_afk and BROWSER_APP_RE.search(app)
+                          and DISTRACT_TITLE_RE.search(title))
             heard = _audio_youtube() if fresh_not_afk else None
             _yt_heard = heard
             active = win_yt or bool(heard)
@@ -4242,7 +4249,9 @@ def _yt_live_status():
         active = age < 180 and aev[0]["data"].get("status") == "not-afk"
         if not active:
             return False, False
-        watching = bool(YT_TITLE_RE.search(wev[0]["data"].get("title", ""))
+        app = wev[0]["data"].get("app", "")
+        title = wev[0]["data"].get("title", "")
+        watching = bool((BROWSER_APP_RE.search(app) and DISTRACT_TITLE_RE.search(title))
                         or _audio_youtube())
         return watching, True
     except Exception:
