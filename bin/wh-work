@@ -1,0 +1,214 @@
+#!/usr/bin/env python3
+"""wh-work - железный диспетчер ящика робота.
+
+Цикл держит скрипт, ИИ заперт в камере: одна коробка = одна безголовая
+сессия = один вердикт (wh done / wh report). Скрипт не верит ИИ на слово -
+после каждой камеры сам проверяет по базе, сдвинулась ли коробка; если
+сессия умерла без вердикта, стопор ставит скрипт.
+
+wh-work            прогон: окно за окном, пока ящик не опустеет
+wh-work --one      прогнать ровно одну коробку (обкатка)
+wh-work status     что сейчас происходит / итог последнего прогона
+wh-work report     показать последний отчёт
+
+Настройка через окружение:
+  WH_WORK_TIMEOUT  секунд на камеру (дефолт 900)
+  WH_WORK_MAX      предохранитель: максимум коробок за прогон (дефолт 30)
+  WH_WORK_CMD      команда движка (дефолт: claude -p --dangerously-skip-permissions),
+                   приказ подаётся в stdin
+"""
+import datetime
+import json
+import os
+import sqlite3
+import subprocess
+import sys
+import urllib.request
+from pathlib import Path
+
+BASE = "http://127.0.0.1:8091"
+REPO = Path(__file__).resolve().parent.parent
+DATA = Path(os.environ.get("WAREHOUSE_DATA", Path.home() / ".local/share/warehouse"))
+DB_PATH = Path(os.environ.get("WAREHOUSE_DB", DATA / "warehouse.db"))
+STATUS = DATA / "robot_run.json"
+REPORT = DATA / "robot_report.md"
+LOGS = DATA / "robot_logs"
+LOCK = DATA / "robot_run.lock"
+ORDER = REPO / "bin" / "wh-work-order.md"
+
+TIMEOUT = int(os.environ.get("WH_WORK_TIMEOUT", "900"))
+MAX_BOXES = int(os.environ.get("WH_WORK_MAX", "30"))
+ENGINE_CMD = os.environ.get("WH_WORK_CMD", "claude -p --dangerously-skip-permissions")
+
+
+def api(path, payload=None):
+    req = urllib.request.Request(BASE + path)
+    if payload is not None:
+        req.data = json.dumps(payload).encode()
+        req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.load(r)
+
+
+def box_state(box_id):
+    """Правда о коробке - напрямую из базы, только чтение."""
+    conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT shelf, ai_note FROM boxes WHERE id=?", (box_id,)).fetchone()
+    conn.close()
+    return (row["shelf"], row["ai_note"]) if row else (None, None)
+
+
+def write_status(**kw):
+    STATUS.write_text(json.dumps(
+        {**kw, "updated_at": datetime.datetime.now().isoformat(timespec="seconds")},
+        ensure_ascii=False, indent=1))
+
+
+def lock_alive():
+    if not LOCK.exists():
+        return None
+    try:
+        pid = int(LOCK.read_text())
+        os.kill(pid, 0)
+        return pid
+    except (ValueError, ProcessLookupError, PermissionError):
+        return None
+
+
+def run_cell(box, log_path):
+    """Камера: одна безголовая сессия на одну коробку. Возврат: 'ok'|'timeout'|'crash'."""
+    order = ORDER.read_text().replace("{id}", str(box["id"])).replace(
+        "{text}", box["raw_text"])
+    with open(log_path, "w") as log:
+        log.write(f"=== коробка #{box['id']} · {datetime.datetime.now().isoformat(timespec='seconds')}\n"
+                  f"=== {box['raw_text']}\n\n")
+        log.flush()
+        try:
+            p = subprocess.run(
+                ENGINE_CMD.split(), input=order, text=True,
+                stdout=log, stderr=subprocess.STDOUT,
+                cwd=REPO, timeout=TIMEOUT)
+            return "ok" if p.returncode == 0 else "crash"
+        except subprocess.TimeoutExpired:
+            log.write(f"\n=== УБИТ ПО ТАЙМЕРУ ({TIMEOUT}с)\n")
+            return "timeout"
+
+
+def run(one_shot=False):
+    pid = lock_alive()
+    if pid:
+        print(f"Прогон уже идёт (pid {pid}). Смотри: wh-work status")
+        sys.exit(1)
+    DATA.mkdir(parents=True, exist_ok=True)
+    LOCK.write_text(str(os.getpid()))
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M")
+    run_logs = LOGS / stamp
+    run_logs.mkdir(parents=True, exist_ok=True)
+    started = datetime.datetime.now()
+    done, stuck, failed = [], [], []
+    seen = set()
+    try:
+        while len(seen) < MAX_BOXES:
+            q = api("/robot_queue")
+            items = [b for b in q["items"] if b["id"] not in seen]
+            if not items:
+                break
+            box = items[0]
+            seen.add(box["id"])
+            write_status(state="working", box=box["id"], box_text=box["raw_text"][:120],
+                         done=len(done), stuck=len(stuck), failed=len(failed),
+                         remaining=q["total"] - 1, started_at=started.isoformat(timespec="seconds"))
+            log_path = run_logs / f"box-{box['id']}.log"
+            print(f"▶ #{box['id']} {box['raw_text'][:80]}")
+            outcome = run_cell(box, log_path)
+            shelf, note = box_state(box["id"])
+            if shelf == "done":
+                done.append((box, note))
+                print(f"  ✅ закрыта: {(note or '')[:80]}")
+            elif shelf == "robot" and note:
+                stuck.append((box, note))
+                print(f"  ⛔ стопор: {note[:80]}")
+            else:
+                why = {"timeout": f"не уложился в {TIMEOUT // 60} мин, убит по таймеру",
+                       "crash": "сессия упала",
+                       "ok": "сессия завершилась без вердикта"}[outcome]
+                verdict = f"⚠ прогон wh-work: {why}. Лог: {log_path}"
+                api("/box/ai_note", {"id": box["id"], "text": verdict})
+                failed.append((box, verdict))
+                print(f"  ⚠ без вердикта ({why})")
+            if one_shot:
+                break
+    finally:
+        LOCK.unlink(missing_ok=True)
+    minutes = int((datetime.datetime.now() - started).total_seconds() // 60)
+    write_report(started, minutes, done, stuck, failed)
+    write_status(state="finished", done=len(done), stuck=len(stuck),
+                 failed=len(failed), minutes=minutes,
+                 started_at=started.isoformat(timespec="seconds"), report=str(REPORT))
+    print(f"\nПрогон окончен за {minutes} мин: ✅ {len(done)} · ⛔ {len(stuck)} · ⚠ {len(failed)}")
+    print(f"Отчёт: {REPORT}")
+
+
+def write_report(started, minutes, done, stuck, failed):
+    lines = [f"# Отчёт робота склада · {started.strftime('%d.%m.%Y %H:%M')}",
+             f"Прогон {minutes} мин · закрыто {len(done)} · стопоров {len(stuck)} · без вердикта {len(failed)}",
+             ""]
+    if done:
+        lines.append(f"## ✅ Закрыто ({len(done)})")
+        for box, note in done:
+            lines += [f"- **#{box['id']}** {box['raw_text']}",
+                      f"  - доказательство: {note or 'нет (!)'}"]
+        lines.append("")
+    if stuck:
+        lines.append(f"## ⛔ Стопоры - нужен твой ответ ({len(stuck)})")
+        for box, note in stuck:
+            lines += [f"- **#{box['id']}** {box['raw_text']}",
+                      f"  - {note}"]
+        lines.append("")
+    if failed:
+        lines.append(f"## ⚠ Без вердикта - смотри логи ({len(failed)})")
+        for box, note in failed:
+            lines += [f"- **#{box['id']}** {box['raw_text']}",
+                      f"  - {note}"]
+        lines.append("")
+    if not (done or stuck or failed):
+        lines.append("Ящик робота был пуст - делать было нечего.")
+    REPORT.write_text("\n".join(lines))
+
+
+def show_status():
+    if not STATUS.exists():
+        print("Прогонов ещё не было.")
+        return
+    s = json.loads(STATUS.read_text())
+    if s.get("state") == "working" and lock_alive():
+        print(f"🔧 В работе коробка #{s['box']}: {s['box_text']}")
+        print(f"   сделано {s['done']} · стопоров {s['stuck']} · без вердикта {s['failed']} · в ящике ещё {s['remaining']}")
+    else:
+        print(f"Последний прогон ({s.get('started_at', '?')}): "
+              f"✅ {s.get('done', 0)} · ⛔ {s.get('stuck', 0)} · ⚠ {s.get('failed', 0)}"
+              + (f" · {s['minutes']} мин" if "minutes" in s else ""))
+        print(f"Отчёт: {REPORT}")
+
+
+def main():
+    args = sys.argv[1:]
+    if args and args[0] == "status":
+        show_status()
+    elif args and args[0] == "report":
+        print(REPORT.read_text() if REPORT.exists() else "Отчётов ещё нет.")
+    elif args and args[0] == "--one":
+        run(one_shot=True)
+    elif not args:
+        run()
+    else:
+        sys.exit(__doc__.strip())
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except OSError as e:
+        sys.exit(f"Сервер склада не отвечает (порт 8091)? {e}")

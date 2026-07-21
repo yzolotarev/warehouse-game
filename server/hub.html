@@ -263,7 +263,7 @@ async function load(){
     // живой гейт: кредит и состояние шлагбаума вместо статичной подписи
     const g=d.gate||{},bal=d.yt_balance??'?';
     const lbl={protected:'🛡 защищённый час',penalty:'💀 штраф',no_credit:'🚧 закрыт — кредита нет',
-      manual_off:'🔓 отключено',credit:'открыт'}[g.reason]||'режим внимания';
+      manual_off:'🔓 отключено',credit:'открыт',cooldown:'😴 остывание'}[g.reason]||'режим внимания';
     document.getElementById('focusFlav').textContent=
       d.on?'идёт · '+Math.floor(d.elapsed/60)+'м':`кредит ${bal}м · ${lbl}`;
   }).catch(()=>{});

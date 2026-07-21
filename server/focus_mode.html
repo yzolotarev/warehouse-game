@@ -103,7 +103,9 @@ async function refresh(){
   renderGate();renderMain();renderDis(ST.distractions||[]);
 }
 const GATE_RU={protected:'🛡 защищённый час',penalty:'💀 штраф за срыв',
-  no_credit:'🚧 кредита нет',manual_off:'🔓 отключено честно',credit:'открыт'};
+  no_credit:'🚧 кредита нет',manual_off:'🔓 отключено честно',credit:'открыт',
+  cooldown:'😴 остывание'};
+function mmss(s){s=Math.max(0,Math.round(s));return Math.floor(s/60)+':'+String(s%60).padStart(2,'0')}
 function renderGate(){
   const g=ST.gate||{},bal=ST.yt_balance??0;
   const blocked=g.state==='blocked';
@@ -122,6 +124,7 @@ function renderGate(){
     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
       <span style="font-size:26px;font-weight:700">${bal} мин</span>
       <span class="ph ${blocked?'blocked':'open'}">${GATE_RU[g.reason]||g.state}${until}</span>
+      ${g.cycle_left!=null?`<span class="goal">${g.reason==='cooldown'?'😴 остывание':'🫧 глоток'} ${mmss(g.cycle_left)}</span>`:''}
       ${ST.heard?`<span class="goal">🎧 слышу: ${esc(ST.heard)}</span>`:''}
     </div>
     <div class="addrow" style="margin-top:10px">

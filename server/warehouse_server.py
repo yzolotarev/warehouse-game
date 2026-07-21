@@ -203,10 +203,11 @@ def streak_state(conn):
 # Канон ресёрча (NLM «Earned screen time»): при нуле - трение/видимость, НЕ блок
 # (реактивность); изредка кубик-бонус (вариативность против выгорания новизны);
 # творческие паллеты вне экономики (overjustification: не награждать интересное).
-YT_PER_DONE = 15          # минут перекуса за сделанный шаг
-YT_BONUS = 25             # кубик: изредка вместо обычных
+# Ценники урезаны 21.07 (были щедры: задача=15м, кап 90, 1очко=1мин - двойной счёт).
+YT_PER_DONE = 5           # минут перекуса за сделанный шаг
+YT_BONUS = 10             # кубик: изредка вместо обычных
 YT_BONUS_CHANCE = 6       # 1 из N начислений - бонусное
-YT_CAP = 90               # потолок накоплений (копить бесконечно = экономика мертва)
+YT_CAP = 45               # потолок накоплений (копить бесконечно = экономика мертва)
 YT_NUDGE_COOLDOWN = 300   # сек между нуджами «кредит кончился»
 AW_URL = os.environ.get("WAREHOUSE_AW", "http://localhost:5600/api/0")
 YT_TITLE_RE = re.compile(r"youtube|twitch", re.IGNORECASE)
@@ -3829,7 +3830,13 @@ YT_LOSS_BURN = 15        # мин кредита, сгорающих при ср
 YT_PENALTY_MIN = 10      # мин жёсткого блока после срыва
 UNBLOCK_WAIT_SEC = 60    # трение выхода: пауза до кнопки «подтвердить»
 UNBLOCK_OFF_MIN = 60     # честное отключение действует час, потом блок сам вернётся
-YT_BUY_RATE = 1          # очков за минуту ютуба (очки = единая валюта)
+YT_BUY_RATE = 3          # очков за минуту ютуба (урезано 21.07: было 1, задача=1мин)
+
+# Ритм-глотки поверх кредита (21.07, запрос юзера «3 можно / остывание»):
+# НЕ расписание - отсчёт от твоего действия, тикает только пока ты активен за ПК.
+# Глоток тратит кредит; кончился глоток → остывание, ютуб закрыт даже при кредите.
+SIP_SEC = 180            # глоток: 3 мин активного просмотра
+COOL_SEC = 900           # остывание: 15 мин активного времени (не смотришь - всё равно тикает)
 
 FOCUS_DEFAULTS = [
     # (pattern, domains) - поля циклов мертвы, оставлены в БД ради истории added_at
@@ -3926,9 +3933,43 @@ def _protected_now():
     return False, None
 
 
+# Ритм-глотки: состояние живёт в памяти (быстро меняется, переживать рестарт не
+# обязано - на рестарте начинаем со свежего глотка, кредит всё равно сторожит).
+_yt_cycle = {"phase": "sip", "sip": 0.0, "cool": 0.0}
+_cycle_lock = threading.Lock()
+
+
+def _advance_cycle(dt, watching, active):
+    """Двигает ритм. Глоток растёт, только пока РЕАЛЬНО смотришь; остывание тикает,
+    пока ты активен за ПК (не смотришь - всё равно идёт, но отошёл - замирает)."""
+    with _cycle_lock:
+        c = _yt_cycle
+        if c["phase"] == "sip":
+            if watching:
+                c["sip"] += dt
+                if c["sip"] >= SIP_SEC:
+                    c["phase"] = "cooldown"
+                    c["cool"] = 0.0
+        elif active:
+            c["cool"] += dt
+            if c["cool"] >= COOL_SEC:
+                c["phase"] = "sip"
+                c["sip"] = 0.0
+
+
+def _cycle_snapshot():
+    with _cycle_lock:
+        c = dict(_yt_cycle)
+    if c["phase"] == "cooldown":
+        c["left"] = max(0, int(COOL_SEC - c["cool"]))
+    else:
+        c["left"] = max(0, int(SIP_SEC - c["sip"]))
+    return c
+
+
 def _yt_gate(conn):
     """Единая точка решения «ютуб открыт или закрыт». Приоритет:
-    защищённый час > штраф за срыв > честное отключение > баланс кредита."""
+    защищённый час > штраф > честное отключение > нет кредита > остывание глотка."""
     now = datetime.now()
     prot, rng = _protected_now()
     if prot:
@@ -3941,7 +3982,13 @@ def _yt_gate(conn):
         return {"state": "open", "reason": "manual_off", "until": off}
     if yt_balance(conn) <= 0:
         return {"state": "blocked", "reason": "no_credit", "until": None}
-    return {"state": "open", "reason": "credit", "until": None}
+    # кредит есть - но ритм: во время остывания закрыто даже с кредитом
+    cyc = _cycle_snapshot()
+    if cyc["phase"] == "cooldown":
+        return {"state": "blocked", "reason": "cooldown", "until": None,
+                "cycle_left": cyc["left"]}
+    return {"state": "open", "reason": "credit", "until": None,
+            "cycle_left": cyc["left"]}
 
 
 def _yt_block_domains(gate):
@@ -4068,15 +4115,40 @@ GATE_NOTIFY = {
     "no_credit": ("🚧 Кредит кончился - ютуб закрыт", "Шаг из фокуса откроет."),
     "protected": ("🛡 Защищённый час", "Ютуб закрыт наглухо, кредит не поможет."),
     "penalty": ("💀 Штрафной блок", "Срыв челленджа: ютуб закрыт на время штрафа."),
+    "cooldown": ("😴 Остывание", "Глоток кончился - перерыв 15 мин, потом снова можно."),
 }
+
+
+def _yt_live_status():
+    """(смотрит_ли, активен_ли) из ActivityWatch+слуха для ритма. Оба свежие."""
+    try:
+        win_b, afk_b = _aw_find_buckets()
+        if not (win_b and afk_b):
+            return False, False
+        wev = _aw_get(f"buckets/{win_b}/events?limit=1")
+        aev = _aw_get(f"buckets/{afk_b}/events?limit=1")
+        if not (wev and aev):
+            return False, False
+        ts = datetime.fromisoformat(wev[0]["timestamp"].replace("Z", "+00:00"))
+        age = (datetime.now(ts.tzinfo) - ts).total_seconds() - wev[0]["duration"]
+        active = age < 180 and aev[0]["data"].get("status") == "not-afk"
+        if not active:
+            return False, False
+        watching = bool(YT_TITLE_RE.search(wev[0]["data"].get("title", ""))
+                        or _audio_youtube())
+        return watching, True
+    except Exception:
+        return False, False
 
 
 def focus_hosts_loop():
     """Губернатор: держит /etc/hosts в согласии с экономическим гейтом (_yt_gate).
-    Никаких собственных часов - только реакция на кредит/штраф/защищённый час."""
+    Плюс двигает ритм-глотки (только пока юзер активен - см. _advance_cycle)."""
     last_state = None
     while True:
         try:
+            watching, active = _yt_live_status()
+            _advance_cycle(6, watching, active)  # шаг = период цикла
             with db() as conn:
                 gate = _yt_gate(conn)
             _focus_write_hosts(
