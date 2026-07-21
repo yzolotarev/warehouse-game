@@ -31,10 +31,18 @@
     { id: "Z5_-59tIG-8", name: "🌩 гроза над деревней" },
     { id: "VNPKlVq0z2Y", name: "🚂 поезд в никуда" },
   ];
-  let st = { on: false, src: "y:" + YT[0].id, sound: false, custom: [] };
+  // Дефолт = «авто» (ЛОКАЛЬНЫЕ файлы): фон-замена обязана жить именно когда
+  // шлагбаум закрыл ютуб - встройка в этот момент мертва вместе с ним (hosts).
+  // Ютуб-пресеты остались опцией «когда открыто» (решение юзера 21.07 вечер).
+  let st = { on: false, src: "auto", sound: false, custom: [] };
   try { st = Object.assign(st, JSON.parse(localStorage.getItem(LS) || "{}")); } catch (e) {}
   // миграция 21.07: фон включён по умолчанию; один раз включаем, дальше решает юзер
   if (!localStorage.whAmbOn21) { st.on = true; localStorage.whAmbOn21 = "1"; }
+  // миграция 21.07b: дефолт-источник = авто/локальные (ютуб под шлагбаумом гаснет)
+  if (!localStorage.whAmbAuto21) {
+    st.src = "auto"; localStorage.whAmbAuto21 = "1";
+    localStorage.setItem(LS, JSON.stringify(st));
+  }
   const save = () => localStorage.setItem(LS, JSON.stringify(st));
   let files = [], pick = null;
   try { pick = JSON.parse(localStorage.getItem(LSPICK) || "null"); } catch (e) {}
