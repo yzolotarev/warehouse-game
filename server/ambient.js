@@ -44,6 +44,11 @@
     localStorage.setItem(LS, JSON.stringify(st));
   }
   const save = () => localStorage.setItem(LS, JSON.stringify(st));
+  // Форс-фон через URL (?amb=outpost): глобальный хоткей Win+W открывает меню
+  // с ГАРАНТИРОВАННЫМ видео, не полагаясь на прошлое состояние localStorage.
+  // Точный файл выбирается по подстроке после загрузки /ambient_list (ниже).
+  const forceAmb = new URLSearchParams(location.search).get("amb");
+  if (forceAmb) { st.on = true; save(); }
   let files = [], pick = null, filesLoaded = false;
   try { pick = JSON.parse(localStorage.getItem(LSPICK) || "null"); } catch (e) {}
 
@@ -95,6 +100,13 @@
     if (st.on) mount(); // не ждём сеть: играем прошлый выбор сразу
     try { files = (await (await fetch("/ambient_list")).json()).files || []; } catch (e) {}
     filesLoaded = true;
+    // Форс-фон: файл, чьё имя содержит ?amb=... (регистр не важен). Нашёлся -
+    // прибиваем источник к нему и монтируем обязательное видео поверх дефолта.
+    if (forceAmb) {
+      const hit = files.find(f => f.toLowerCase().includes(forceAmb.toLowerCase()));
+      if (hit) { st.src = "f:" + hit; save(); }
+      st.on = true; mount();
+    }
     render();
     // ВИДЕО СРАЗУ, до опроса LLM (баг «открыл меню - фон не запустился»):
     // список файлов известен - монтируем прошлый/дефолтный фон немедленно.
