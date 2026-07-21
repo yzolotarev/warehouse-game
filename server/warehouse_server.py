@@ -3832,6 +3832,12 @@ UNBLOCK_WAIT_SEC = 60    # трение выхода: пауза до кнопк
 UNBLOCK_OFF_MIN = 60     # честное отключение действует час, потом блок сам вернётся
 YT_BUY_RATE = 3          # очков за минуту ютуба (урезано 21.07: было 1, задача=1мин)
 
+# sing-box шлагбаум (21.07): ютуб режется на уровне сети для ЛЮБОГО браузера, но
+# живёт для белого списка (плееры) - см. durev_gen.py. Склад щёлкает gate по clash-api.
+# Рвёт живое соединение (RST) - играющая вкладка захлебнётся, не только новые.
+SINGBOX_CLASH = "http://127.0.0.1:9090"
+SINGBOX_YT_SELECTOR = "grp-yt-gate"
+
 # Ритм-глотки поверх кредита (21.07, запрос юзера «3 можно / остывание»):
 # НЕ расписание - отсчёт от твоего действия, тикает только пока ты активен за ПК.
 # Глоток тратит кредит; кончился глоток → остывание, ютуб закрыт даже при кредите.
@@ -3992,16 +3998,16 @@ def _yt_gate(conn):
 
 
 def _yt_block_domains(gate):
-    """Что резать при закрытом гейте: канон-домены + все залипалки юзера;
-    googlevideo - только в защищённые часы (см. комментарий у YT_HARD_DOMAINS)."""
-    out = set(YT_DOMAINS)
+    """Что резать в hosts при закрытом гейте. ЮТУБ здесь БОЛЬШЕ НЕТ - им рулит
+    sing-box (по процессу: браузеры режет, плееры/загрузки нет; hosts глобален и
+    прибил бы белый список). hosts остаётся для не-ютуб залипалок юзера (reddit и т.п.)."""
+    out = set()
+    yt_marks = ("youtube", "youtu.be", "googlevideo", "ytimg")
     for d in _focus_distractions():
         for dom in (d["domains"] or "").split(","):
             dom = _focus_norm_domain(dom)
-            if dom:
+            if dom and not any(m in dom for m in yt_marks):
                 out.add(dom)
-    if gate.get("reason") == "protected":
-        out.update(YT_HARD_DOMAINS)
     return sorted(out)
 
 
@@ -4009,6 +4015,21 @@ def _flush_dns():
     """Сброс DNS-кэша после смены hosts - иначе открытые браузеры живут на кэше."""
     try:
         subprocess.run(["resolvectl", "flush-caches"], timeout=5, check=False)
+    except Exception:
+        pass
+
+
+def _singbox_yt(blocked):
+    """Щёлкает sing-box gate по clash-api: закрыт → ютуб в чёрную дыру (RST),
+    открыт → нормальный маршрут. Сеть-уровень, режет любой браузер, рвёт живое
+    соединение. sing-box лежит/нет clash → тихо мимо (hosts остаётся страховкой)."""
+    target = "yt-blackhole" if blocked else "grp-yt"
+    try:
+        req = urllib.request.Request(
+            f"{SINGBOX_CLASH}/proxies/{SINGBOX_YT_SELECTOR}",
+            data=json.dumps({"name": target}).encode(),
+            method="PUT", headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=5)
     except Exception:
         pass
 
@@ -4108,11 +4129,60 @@ def _yt_sink_inputs():
 
 def _mute_youtube(mute):
     """Глушит/разглушает ютуб-звук при блоке (запрос юзера 21.07: оборвать бубнёж,
-    а не ждать конца вкладки). Бьёт только по ютуб-потокам - фон склада не трогает."""
+    а не ждать конца вкладки). Бьёт только по ютуб-потокам - фон склада не трогает.
+    ⚠ Firefox сваливает весь звук в ОДИН поток → глушит весь браузер. Потому по
+    умолчанию выключено (флаг yt_mute_audio), основной путь - _pause_youtube (MPRIS)."""
     for sid in _yt_sink_inputs():
         try:
             subprocess.run(["pactl", "set-sink-input-mute", sid, "1" if mute else "0"],
                            timeout=5, check=False)
+        except Exception:
+            pass
+
+
+def _mpris_players():
+    """Имена MPRIS-плееров на сессионной шине (браузеры, музыка…)."""
+    try:
+        out = subprocess.run(["busctl", "--user", "list", "--no-legend"],
+                             capture_output=True, text=True, timeout=5,
+                             env={**os.environ, "LC_ALL": "C"})
+        names = set()
+        for line in out.stdout.splitlines():
+            n = line.split()[0] if line.split() else ""
+            if n.startswith("org.mpris.MediaPlayer2."):
+                names.add(n)
+        return names
+    except Exception:
+        return set()
+
+
+def _pause_youtube():
+    """Пауза ИМЕННО медиа-вкладки с ютубом через MPRIS (запрос юзера 21.07):
+    звук/видео встаёт как по кнопке паузы, звук других вкладок не трогается.
+    Проверяем метаданные плеера - ставим на паузу только если это ютуб/твич."""
+    for name in _mpris_players():
+        try:
+            meta = subprocess.run(
+                ["gdbus", "call", "--session", "--dest", name,
+                 "--object-path", "/org/mpris/MediaPlayer2", "--method",
+                 "org.freedesktop.DBus.Properties.Get",
+                 "org.mpris.MediaPlayer2.Player", "Metadata"],
+                capture_output=True, text=True, timeout=5)
+            if not AUDIO_MEDIA_RE.search(meta.stdout):
+                continue
+            status = subprocess.run(
+                ["gdbus", "call", "--session", "--dest", name,
+                 "--object-path", "/org/mpris/MediaPlayer2", "--method",
+                 "org.freedesktop.DBus.Properties.Get",
+                 "org.mpris.MediaPlayer2.Player", "PlaybackStatus"],
+                capture_output=True, text=True, timeout=5)
+            if "Playing" not in status.stdout:
+                continue
+            subprocess.run(
+                ["gdbus", "call", "--session", "--dest", name,
+                 "--object-path", "/org/mpris/MediaPlayer2", "--method",
+                 "org.mpris.MediaPlayer2.Player.Pause"],
+                capture_output=True, text=True, timeout=5)
         except Exception:
             pass
 
@@ -4190,10 +4260,14 @@ def focus_hosts_loop():
             with db() as conn:
                 gate = _yt_gate(conn)
             blocked = gate["state"] == "blocked"
+            # ЮТУБ: sing-box рубит соединение (любой браузер, живая вкладка тоже).
+            _singbox_yt(blocked)
+            # не-ютуб залипалки (reddit и т.п.) - через hosts, как раньше.
             _focus_write_hosts(_yt_block_domains(gate) if blocked else [])
-            # блок закрыл домены, но играющая вкладка доигрывает - глушим её звук
-            # (бубнёж = боль); блок снят → возвращаем звук
-            _mute_youtube(blocked)
+            # мягкая добавка: пауза ютуб-вкладки через MPRIS, чтобы не ждать, пока
+            # добьётся буфер (sing-box уже оборвал докачку). Нет MPRIS - тихо мимо.
+            if blocked:
+                _pause_youtube()
             key = (gate["state"], gate["reason"])
             if key != last_state:
                 with db() as conn:
