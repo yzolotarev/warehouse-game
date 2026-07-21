@@ -16,6 +16,7 @@ import tempfile
 import threading
 import time
 import urllib.error
+import uuid
 import urllib.request
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
@@ -3309,6 +3310,12 @@ def world_page():
     return FileResponse(Path(__file__).parent / "world.html")
 
 
+@app.get("/app")
+def app_shell():
+    """Оболочка непрерывного фона: амбиенс в родителе, склад в iframe (21.07)."""
+    return FileResponse(Path(__file__).parent / "app.html")
+
+
 @app.get("/hub")
 def hub_page():
     return FileResponse(Path(__file__).parent / "hub.html")
@@ -3461,7 +3468,8 @@ def _yt_state(conn):
         "WHERE delta<0 AND date(at)=?", (today,)).fetchone()["s"]
     return {"balance": round(bal, 1), "per_done": YT_PER_DONE, "cap": YT_CAP,
             "today_earned": round(earned, 1), "today_spent": round(spent, 1),
-            "watching": _yt_watching}
+            "watching": _yt_watching, "heard": _yt_heard,
+            "gate": _yt_gate(conn)}
 
 
 @app.get("/yt")
@@ -3504,6 +3512,7 @@ def notify(title, body, urgent=False):
 
 
 _yt_watching = False  # для /yt: смотрит ли прямо сейчас (обновляет watcher)
+_yt_heard = None      # для /yt и /focus/state: что СЛЫШНО фоном («🎧 слышу: …»)
 
 # Heartbeat: когда браузер открыт на любой странице склада (кроме capture),
 # storozh.js шлёт POST /heartbeat раз в минуту. Используем чтобы не слать
@@ -3536,14 +3545,17 @@ def _aw_find_buckets():
 
 
 def yt_watcher():
-    """Списание перекус-кредита по факту: ActivityWatch видит YouTube в активном
-    окне (и человек не AFK) → минус минута. При нуле - нудж, НЕ блок (канон:
-    трение вместо стены, реактивность от жёстких блоков хоронит систему).
-    ActivityWatch недоступен → экономика просто замирает, склад живёт дальше."""
+    """Списание перекус-кредита по факту. Пересборка 21.07: «смотрит» = активное
+    окно с ютубом ИЛИ фоновый ЗВУК ютуба (слух _audio_youtube - главный паттерн
+    юзера: ютуб бубнит, пока он в терминале). Оба - только когда не AFK.
+    При нуле баланс уходит В МИНУС (долг): hosts не может убить уже играющую
+    вкладку, но каждая фоновая минута честно записывается и гасится yt_earn.
+    Блокирует не этот поток, а губернатор (focus_hosts_loop) по _yt_gate.
+    ActivityWatch недоступен → экономика замирает, склад живёт дальше."""
     tick = 60
     win_b = afk_b = None
     last_nudge = 0.0
-    global _yt_watching
+    global _yt_watching, _yt_heard
     while True:
         time.sleep(tick)
         try:
@@ -3559,19 +3571,23 @@ def yt_watcher():
             # свежесть: heartbeat должен покрывать «сейчас» (иначе AW спит/стоит)
             ts = datetime.fromisoformat(wev[0]["timestamp"].replace("Z", "+00:00"))
             age = (datetime.now(ts.tzinfo) - ts).total_seconds() - wev[0]["duration"]
-            active = (age < 3 * tick
-                      and aev[0]["data"].get("status") == "not-afk"
-                      and YT_TITLE_RE.search(wev[0]["data"].get("title", "")))
-            _yt_watching = bool(active)
+            fresh_not_afk = (age < 3 * tick
+                             and aev[0]["data"].get("status") == "not-afk")
+            win_yt = bool(fresh_not_afk
+                          and YT_TITLE_RE.search(wev[0]["data"].get("title", "")))
+            heard = _audio_youtube() if fresh_not_afk else None
+            _yt_heard = heard
+            active = win_yt or bool(heard)
+            _yt_watching = active
             if not active:
                 continue
             with db() as conn:
                 bal = yt_balance(conn)
-                if bal > 0:
-                    spend = min(tick / 60, bal)
-                    conn.execute("INSERT INTO yt_ledger(delta, reason) VALUES(?,?)",
-                                 (-spend, "просмотр"))
-                elif time.time() - last_nudge >= YT_NUDGE_COOLDOWN:
+                # долг разрешён: списываем полную минуту даже на нуле
+                conn.execute("INSERT INTO yt_ledger(delta, reason) VALUES(?,?)",
+                             (-tick / 60,
+                              "просмотр" if win_yt else "фоновый звук"))
+                if bal <= 0 and time.time() - last_nudge >= YT_NUDGE_COOLDOWN:
                     last_nudge = time.time()
                     focus_txt = conn.execute(
                         "SELECT raw_text FROM boxes WHERE shelf='focus' "
@@ -3792,28 +3808,88 @@ def get_flag_standalone(key):
 FOCUS_HOSTS_BEGIN = "# >>> warehouse-focus >>>"
 FOCUS_HOSTS_END = "# <<< warehouse-focus <<<"
 FOCUS_BONUS_MIN, FOCUS_BONUS_MAX = 3, 8   # разброс очков за один бонус
-FOCUS_GRACE_SEC = 30                       # сколько секунд в залипалке до проигрыша
+FOCUS_GRACE_SEC = 30    # бюджет «ведра» залипания (сек); копится, а не сбрасывается
 _focus_lock = threading.Lock()
-# живое состояние надзора (эпоха time.time()); читается в /focus/state
-_focus_watch = {"since": None, "pattern": None, "app": "", "title": ""}
+# живое состояние надзора; debt_sec = протекающее ведро (см. challenge loop)
+_focus_watch = {"debt_sec": 0.0, "pattern": None, "app": "", "title": "",
+                "aw_stale": False, "last_tick": None}
+
+# ── Экономический шлагбаум (пересборка 21.07, план jazzy-sniffing-blossom) ──
+# Один источник истины: баланс yt_ledger. Кредит > 0 → ютуб открыт (AW списывает),
+# кредит 0 → hosts-блок. Настенных циклов «можно/остывание» больше НЕТ - система
+# вне времени; единственное исключение - защищённые часы (санкция юзера).
+YT_DOMAINS = ["youtube.com", "youtu.be", "m.youtube.com", "music.youtube.com"]
+# googlevideo режем ТОЛЬКО в защищённые часы: в обычном блоке он оставлен жить,
+# иначе умирают уже играющие вкладки и ютуб-встройка амбиенса склада.
+# hosts не ловит поддомены (rr5---sn-xyz.googlevideo.com) - реальный сторож
+# фонового звука не hosts, а слух (_audio_youtube) + долг в ledger.
+YT_HARD_DOMAINS = ["googlevideo.com"]
+AUDIO_MEDIA_RE = re.compile(r"youtube|twitch", re.IGNORECASE)
+YT_LOSS_BURN = 15        # мин кредита, сгорающих при срыве челленджа
+YT_PENALTY_MIN = 10      # мин жёсткого блока после срыва
+UNBLOCK_WAIT_SEC = 60    # трение выхода: пауза до кнопки «подтвердить»
+UNBLOCK_OFF_MIN = 60     # честное отключение действует час, потом блок сам вернётся
+YT_BUY_RATE = 1          # очков за минуту ютуба (очки = единая валюта)
 
 FOCUS_DEFAULTS = [
-    # (pattern, domains, allowed_min, cooldown_min)
-    ("youtube", "youtube.com", 3, 10),
-    ("telegram", "telegram.org,web.telegram.org", 3, 10),
+    # (pattern, domains) - поля циклов мертвы, оставлены в БД ради истории added_at
+    ("youtube", "youtube.com"),
+    ("telegram", "telegram.org,web.telegram.org"),
 ]
 
 
 def _focus_seed_defaults():
     with db() as conn:
-        if get_flag(conn, "focus_seeded") == "1":
-            return
-        for pat, dom, al, cd in FOCUS_DEFAULTS:
-            conn.execute(
-                "INSERT OR IGNORE INTO focus_distractions"
-                "(pattern, domains, allowed_min, cooldown_min) VALUES(?,?,?,?)",
-                (pat, dom, al, cd))
-        set_flag(conn, "focus_seeded", "1")
+        if get_flag(conn, "focus_seeded") != "1":
+            for pat, dom in FOCUS_DEFAULTS:
+                conn.execute(
+                    "INSERT OR IGNORE INTO focus_distractions"
+                    "(pattern, domains, allowed_min, cooldown_min) VALUES(?,?,0,0)",
+                    (pat, dom))
+            set_flag(conn, "focus_seeded", "1")
+        # защищённые часы: сид один раз из пиков ActivityWatch юзера (~11:00, 18-20),
+        # дальше редактируются только руками через /focus/protected
+        if get_flag(conn, "protected_hours_seeded") != "1":
+            set_flag(conn, "protected_hours",
+                     json.dumps([["10:30", "12:00"], ["18:00", "20:30"]]))
+            set_flag(conn, "protected_hours_seeded", "1")
+
+
+FOCUS_POLICIES = [
+    # DoH в браузерах обходит /etc/hosts молча - выключаем политиками (21.07).
+    # Только создание отсутствующих файлов; существующие не трогаем (см. warning).
+    ("/etc/opt/chrome/policies/managed/warehouse-focus.json",
+     '{"DnsOverHttpsMode": "off"}'),
+    ("/etc/chromium/policies/managed/warehouse-focus.json",
+     '{"DnsOverHttpsMode": "off"}'),
+    # копия в /usr/lib умирает при апдейте пакета firefox - потому дубль в /etc
+    ("/usr/lib/firefox/distribution/policies.json",
+     '{"policies": {"DNSOverHTTPS": {"Enabled": false, "Locked": true}}}'),
+    ("/etc/firefox/policies/policies.json",
+     '{"policies": {"DNSOverHTTPS": {"Enabled": false, "Locked": true}}}'),
+]
+
+
+def _focus_policy_setup():
+    """Одноразово при старте: браузерные политики против DoH-обхода hosts."""
+    for path, content in FOCUS_POLICIES:
+        p = Path(path)
+        try:
+            if p.exists():
+                if "warehouse-focus" not in p.name and content not in p.read_text():
+                    print(f"focus policy: {path} существует, не трогаю (проверь DoH руками)")
+                continue
+            subprocess.run(["sudo", "-n", "mkdir", "-p", str(p.parent)],
+                           timeout=5, check=False)
+            tmp = tempfile.NamedTemporaryFile("w", delete=False, suffix=".json",
+                                              dir="/tmp")
+            tmp.write(content + "\n")
+            tmp.close()
+            subprocess.run(["sudo", "-n", "cp", tmp.name, str(p)],
+                           timeout=5, check=False)
+            os.unlink(tmp.name)
+        except Exception as e:
+            print(f"focus policy setup failed for {path}: {e}")
 
 
 def _focus_norm_domain(raw):
@@ -3834,35 +3910,60 @@ def _focus_distractions():
             "FROM focus_distractions ORDER BY pattern")]
 
 
-def _cycle_phase(anchor_iso, allowed_min, cooldown_min):
-    """Фаза губернатора: ('open'|'blocked', секунд_до_смены). allowed минут
-    открыто, потом cooldown минут закрыто, по кругу от anchor."""
-    if allowed_min <= 0 or cooldown_min <= 0:
-        return "open", 0
+def _protected_now():
+    """(True, 'HH:MM-HH:MM') если сейчас защищённый час, иначе (False, None).
+    Диапазоны в пределах суток (через полночь - не поддерживается сознательно)."""
+    with db() as conn:
+        raw = get_flag(conn, "protected_hours")
     try:
-        el = (datetime.now() - datetime.fromisoformat(anchor_iso)).total_seconds()
-    except (ValueError, TypeError):
-        el = 0
-    period = (allowed_min + cooldown_min) * 60
-    pos = el % period
-    if pos < allowed_min * 60:
-        return "open", int(allowed_min * 60 - pos)
-    return "blocked", int(period - pos)
+        ranges = json.loads(raw or "[]")
+    except ValueError:
+        ranges = []
+    hm = datetime.now().strftime("%H:%M")
+    for a, b in ranges:
+        if a <= hm < b:
+            return True, f"{a}-{b}"
+    return False, None
 
 
-def _focus_cycle_block_domains():
-    """Домены, которые ГУБЕРНАТОР должен резать прямо сейчас (фаза cooldown)."""
-    out = []
+def _yt_gate(conn):
+    """Единая точка решения «ютуб открыт или закрыт». Приоритет:
+    защищённый час > штраф за срыв > честное отключение > баланс кредита."""
+    now = datetime.now()
+    prot, rng = _protected_now()
+    if prot:
+        return {"state": "blocked", "reason": "protected", "until": rng}
+    pen = get_flag(conn, "yt_penalty_until")
+    if pen and pen > now.isoformat():
+        return {"state": "blocked", "reason": "penalty", "until": pen}
+    off = get_flag(conn, "yt_off_until")
+    if off and off > now.isoformat():
+        return {"state": "open", "reason": "manual_off", "until": off}
+    if yt_balance(conn) <= 0:
+        return {"state": "blocked", "reason": "no_credit", "until": None}
+    return {"state": "open", "reason": "credit", "until": None}
+
+
+def _yt_block_domains(gate):
+    """Что резать при закрытом гейте: канон-домены + все залипалки юзера;
+    googlevideo - только в защищённые часы (см. комментарий у YT_HARD_DOMAINS)."""
+    out = set(YT_DOMAINS)
     for d in _focus_distractions():
-        if not d["domains"]:
-            continue
-        phase, _ = _cycle_phase(d["added_at"], d["allowed_min"], d["cooldown_min"])
-        if phase == "blocked":
-            for dom in d["domains"].split(","):
-                dom = _focus_norm_domain(dom)
-                if dom:
-                    out.append(dom)
-    return sorted(set(out))
+        for dom in (d["domains"] or "").split(","):
+            dom = _focus_norm_domain(dom)
+            if dom:
+                out.add(dom)
+    if gate.get("reason") == "protected":
+        out.update(YT_HARD_DOMAINS)
+    return sorted(out)
+
+
+def _flush_dns():
+    """Сброс DNS-кэша после смены hosts - иначе открытые браузеры живут на кэше."""
+    try:
+        subprocess.run(["resolvectl", "flush-caches"], timeout=5, check=False)
+    except Exception:
+        pass
 
 
 def _focus_write_hosts(domains):
@@ -3904,8 +4005,31 @@ def _focus_write_hosts(domains):
             subprocess.run(["sudo", "-n", "cp", tmp.name, str(hosts)],
                            timeout=5, check=False)
             os.unlink(tmp.name)
+            _flush_dns()  # hosts реально сменился (ранний return выше отсёк холостые)
         except Exception as e:
             print("focus hosts write failed:", e)
+
+
+def _audio_youtube():
+    """Слух: играет ли где-то ютуб/твич ЗВУКОМ, даже если окно не активно.
+    Смотрим sink-input'ы PulseAudio/PipeWire: у браузерных вкладок media.name -
+    заголовок вкладки («… - YouTube»). Амбиенс склада отсекается сам: его
+    media.name = заголовок страницы склада или имя локального файла, «youtube»
+    там не встречается. Corked (пауза) - не считается. Вернёт название или None."""
+    try:
+        out = subprocess.run(["pactl", "list", "sink-inputs"],
+                             capture_output=True, text=True, timeout=5)
+        if out.returncode != 0:
+            return None
+        for block in out.stdout.split("Sink Input #"):
+            if re.search(r"Corked:\s*yes", block):
+                continue
+            m = re.search(r'media\.name = "(.*)"', block)
+            if m and AUDIO_MEDIA_RE.search(m.group(1)):
+                return m.group(1)[:80]
+    except Exception:
+        pass
+    return None
 
 
 def _aw_current_window():
@@ -3936,18 +4060,35 @@ def _focus_match(win, distractions):
 
 def _focus_reset_watch():
     with _focus_lock:
-        _focus_watch.update(since=None, pattern=None, app="", title="")
+        _focus_watch.update(debt_sec=0.0, pattern=None, app="", title="",
+                            aw_stale=False, last_tick=None)
+
+
+GATE_NOTIFY = {
+    "no_credit": ("🚧 Кредит кончился - ютуб закрыт", "Шаг из фокуса откроет."),
+    "protected": ("🛡 Защищённый час", "Ютуб закрыт наглухо, кредит не поможет."),
+    "penalty": ("💀 Штрафной блок", "Срыв челленджа: ютуб закрыт на время штрафа."),
+}
 
 
 def focus_hosts_loop():
-    """Губернатор: держит /etc/hosts в согласии с циклами залипалок."""
-    last = None
+    """Губернатор: держит /etc/hosts в согласии с экономическим гейтом (_yt_gate).
+    Никаких собственных часов - только реакция на кредит/штраф/защищённый час."""
+    last_state = None
     while True:
         try:
-            doms = _focus_cycle_block_domains()
-            _focus_write_hosts(doms)
-            if doms != last:
-                last = doms
+            with db() as conn:
+                gate = _yt_gate(conn)
+            _focus_write_hosts(
+                _yt_block_domains(gate) if gate["state"] == "blocked" else [])
+            key = (gate["state"], gate["reason"])
+            if key != last_state:
+                with db() as conn:
+                    log_event(conn, "yt_gate", state=gate["state"],
+                              reason=gate["reason"])
+                if gate["state"] == "blocked" and gate["reason"] in GATE_NOTIFY:
+                    notify(*GATE_NOTIFY[gate["reason"]])
+                last_state = key
         except Exception as e:
             print("focus hosts loop error:", e)
         time.sleep(6)
@@ -3959,9 +4100,19 @@ def _focus_lose(reason):
         set_flag(conn, "focus_result", "lost")
         set_flag(conn, "focus_lost_reason", reason or "")
         set_flag(conn, "focus_lost_at", datetime.now().isoformat(timespec="seconds"))
-        log_event(conn, "focus_lost", reason=reason)
+        # срыв стоит по-настоящему (21.07): сгорает кредит + штрафной блок,
+        # губернатор подхватит yt_penalty_until в течение 6 секунд
+        conn.execute("INSERT INTO yt_ledger(delta, reason) VALUES(?,?)",
+                     (-YT_LOSS_BURN, "💀 срыв челленджа"))
+        until = (datetime.now() + timedelta(minutes=YT_PENALTY_MIN)) \
+            .isoformat(timespec="seconds")
+        set_flag(conn, "yt_penalty_until", until)
+        log_event(conn, "focus_lost", reason=reason, burn=YT_LOSS_BURN,
+                  penalty_until=until)
     _focus_reset_watch()
-    notify("💀 Фокус сорван", f"Залип в «{reason}» — челлендж проигран.", urgent=True)
+    notify("💀 Фокус сорван",
+           f"Залип в «{reason}»: -{YT_LOSS_BURN} мин кредита, "
+           f"ютуб закрыт на {YT_PENALTY_MIN} мин.", urgent=True)
 
 
 def _focus_win(target_min):
@@ -3974,7 +4125,13 @@ def _focus_win(target_min):
 
 
 def focus_challenge_loop():
-    """Надзор: пока идёт челлендж — ловит залипание и решает победу/проигрыш."""
+    """Надзор челленджа. Пересборка 21.07:
+    - «протекающее ведро» вместо сбрасываемого отсчёта: залип - долг растёт,
+      ушёл - долг тает вдвое медленнее; альт-табом каждые 25 сек больше не обмануть;
+    - фоновый ЗВУК ютуба (слух) копит долг даже при активном терминале;
+    - ActivityWatch молчит → челлендж на паузе (aw_stale), а не слепая победа."""
+    audio_check = 0.0
+    audio_heard = None
     while True:
         try:
             with db() as conn:
@@ -3985,34 +4142,60 @@ def focus_challenge_loop():
                 _focus_reset_watch()
                 time.sleep(1)
                 continue
-            try:
-                elapsed = (datetime.now() - datetime.fromisoformat(started)).total_seconds()
-            except (ValueError, TypeError):
-                elapsed = 0
-            if target_min > 0 and elapsed >= target_min * 60:
-                _focus_win(target_min)
+            win = _aw_current_window()
+            stale = win is None  # AW молчит/упал - не судим вслепую
+            now = time.time()
+            # слух дорогой (subprocess) - раз в 5 сек, не каждый тик
+            if now - audio_check >= 5:
+                audio_check = now
+                audio_heard = _audio_youtube()
+            patt = _focus_match(win, _focus_distractions())
+            if not patt and audio_heard:
+                patt = f"🎧 {audio_heard}"
+            with _focus_lock:
+                w = _focus_watch
+                dt = min(now - w["last_tick"], 5) if w["last_tick"] else 1
+                w["last_tick"] = now
+                w["app"] = (win or {}).get("app", "")
+                w["title"] = (win or {}).get("title", "")
+                w["aw_stale"] = stale
+                if stale:
+                    over = False  # пауза: долг не растёт и не тает, время не идёт
+                elif patt:
+                    if w["debt_sec"] == 0:
+                        notify("⚠ Уходи, иначе проигрыш",
+                               f"«{patt}» - ведро наполняется, "
+                               f"{FOCUS_GRACE_SEC} сек до срыва.")
+                    w["pattern"] = patt
+                    w["debt_sec"] += dt
+                    over = w["debt_sec"] >= FOCUS_GRACE_SEC
+                else:
+                    w["debt_sec"] = max(0.0, w["debt_sec"] - dt / 2)
+                    if w["debt_sec"] == 0:
+                        w["pattern"] = None
+                    over = False
+                lose_patt = w["pattern"]
+            if stale:
+                # время челленджа замирает вместе с надзором: сдвигаем якорь,
+                # иначе AW вернётся - а победа уже «натикала» вслепую
+                try:
+                    anchor = datetime.fromisoformat(started) + timedelta(seconds=dt)
+                    with db() as conn:
+                        set_flag(conn, "focus_started",
+                                 anchor.isoformat(timespec="seconds"))
+                except (ValueError, TypeError):
+                    pass
                 time.sleep(1)
                 continue
-            distractions = _focus_distractions()
-            win = _aw_current_window()
-            patt = _focus_match(win, distractions)
-            now = time.time()
-            with _focus_lock:
-                _focus_watch["app"] = (win or {}).get("app", "")
-                _focus_watch["title"] = (win or {}).get("title", "")
-                if patt:
-                    if _focus_watch["since"] is None:
-                        _focus_watch["since"] = now
-                        _focus_watch["pattern"] = patt
-                        notify("⚠ Уходи, иначе проигрыш",
-                               f"«{patt}» — фокус сорвётся через {FOCUS_GRACE_SEC} сек.")
-                    over = now - _focus_watch["since"] >= FOCUS_GRACE_SEC
-                else:
-                    _focus_watch["since"] = None
-                    _focus_watch["pattern"] = None
-                    over = False
-            if patt and over:
-                _focus_lose(patt)
+            try:
+                elapsed = (datetime.now()
+                           - datetime.fromisoformat(started)).total_seconds()
+            except (ValueError, TypeError):
+                elapsed = 0
+            if over:
+                _focus_lose(lose_patt)
+            elif target_min > 0 and elapsed >= target_min * 60:
+                _focus_win(target_min)
         except Exception as e:
             print("focus challenge loop error:", e)
         time.sleep(1)
@@ -4082,6 +4265,74 @@ def focus_distraction_del(p: FocusPattern):
     return {"ok": True}
 
 
+class YtBuy(BaseModel):
+    minutes: int = 15
+
+
+@app.post("/yt_buy")
+def yt_buy(b: YtBuy):
+    """Очки → минуты ютуба (единая валюта, 21.07): продуктивность конвертируется
+    либо в развитие склада (сундук), либо в перекус. Курс YT_BUY_RATE, кап YT_CAP."""
+    mins = max(1, min(60, b.minutes))
+    cost = mins * YT_BUY_RATE
+    with db() as conn:
+        total = conn.execute(
+            "SELECT COALESCE(SUM(amount),0) s FROM points").fetchone()["s"]
+        if total < cost:
+            raise HTTPException(402, f"не хватает очков: надо {cost}, есть {total}")
+        add = min(mins, max(0, YT_CAP - yt_balance(conn)))
+        if add <= 0:
+            raise HTTPException(409, f"кредит уже полон (кап {YT_CAP} мин)")
+        award(conn, -mins * YT_BUY_RATE, "🎬 куплены минуты")
+        conn.execute("INSERT INTO yt_ledger(delta, reason) VALUES(?,?)",
+                     (add, "🎬 покупка за очки"))
+        log_event(conn, "yt_buy", minutes=add, cost=cost)
+    return {"ok": True, "added": add}
+
+
+@app.post("/focus/unblock_request")
+def unblock_request():
+    """Трение выхода (21.07): вместо стены - твоя же мысль + 60 сек паузы.
+    Возвращает случайную мысль юзера и токен; confirm оживёт через UNBLOCK_WAIT_SEC."""
+    with db() as conn:
+        row = conn.execute(
+            "SELECT raw_text FROM boxes WHERE shelf IN ('archived','mind','inbox') "
+            "AND length(raw_text) BETWEEN 20 AND 300 "
+            "ORDER BY RANDOM() LIMIT 1").fetchone()
+        token = uuid.uuid4().hex
+        ready = (datetime.now() + timedelta(seconds=UNBLOCK_WAIT_SEC)) \
+            .isoformat(timespec="seconds")
+        set_flag(conn, "unblock_token", token)
+        set_flag(conn, "unblock_ready_at", ready)
+        log_event(conn, "unblock_request")
+    return {"thought": row["raw_text"] if row else "Зачем я это делаю прямо сейчас?",
+            "token": token, "ready_at": ready, "wait_sec": UNBLOCK_WAIT_SEC}
+
+
+class UnblockConfirm(BaseModel):
+    token: str
+
+
+@app.post("/focus/unblock_confirm")
+def unblock_confirm(u: UnblockConfirm):
+    with db() as conn:
+        tok = get_flag(conn, "unblock_token")
+        ready = get_flag(conn, "unblock_ready_at")
+        now = datetime.now().isoformat(timespec="seconds")
+        if not tok or u.token != tok:
+            raise HTTPException(403, "нет активного запроса на отключение")
+        if not ready or now < ready:
+            raise HTTPException(403, "пауза ещё идёт - подожди")
+        off = (datetime.now() + timedelta(minutes=UNBLOCK_OFF_MIN)) \
+            .isoformat(timespec="seconds")
+        set_flag(conn, "yt_off_until", off)
+        set_flag(conn, "unblock_token", "")
+        set_flag(conn, "unblock_ready_at", "")
+        log_event(conn, "unblock_confirm", off_until=off)
+    # защищённые часы сильнее честного отключения - гейт сам это учитывает
+    return {"ok": True, "off_until": off}
+
+
 @app.post("/focus/bonus")
 def focus_bonus():
     """Watcher зовёт по случайному таймеру — бонус за удержание фокуса."""
@@ -4133,24 +4384,52 @@ def focus_state():
     with _focus_lock:
         w = dict(_focus_watch)
     distraction = None
-    if w["since"] is not None:
+    if w["debt_sec"] > 0 and w["pattern"]:
         distraction = {"active": True, "pattern": w["pattern"],
-                       "since_epoch": w["since"],
-                       "deadline_epoch": w["since"] + FOCUS_GRACE_SEC}
-    dl = []
-    for d in _focus_distractions():
-        phase, left = _cycle_phase(d["added_at"], d["allowed_min"], d["cooldown_min"])
-        dl.append({"pattern": d["pattern"], "domains": d["domains"],
-                   "allowed_min": d["allowed_min"], "cooldown_min": d["cooldown_min"],
-                   "cycle_phase": phase, "cycle_left": left})
+                       "debt_sec": round(w["debt_sec"], 1),
+                       "grace_sec": FOCUS_GRACE_SEC}
+    dl = [{"pattern": d["pattern"], "domains": d["domains"]}
+          for d in _focus_distractions()]
+    with db() as conn:
+        gate = _yt_gate(conn)
+        bal = yt_balance(conn)
+        try:
+            prot = json.loads(get_flag(conn, "protected_hours") or "[]")
+        except ValueError:
+            prot = []
+        unblock_ready = get_flag(conn, "unblock_ready_at") or None
     return {"on": on, "started": started, "elapsed": elapsed,
             "target_min": target_min, "target_sec": target_min * 60,
             "result": result, "lost_reason": lost_reason,
             "grace_sec": FOCUS_GRACE_SEC,
             "now_epoch": time.time(),
             "window": {"app": w["app"], "title": w["title"]},
+            "aw_stale": w["aw_stale"], "heard": _yt_heard,
+            "gate": gate, "yt_balance": round(bal, 1),
+            "protected_hours": prot, "unblock_ready_at": unblock_ready,
+            "buy_rate": YT_BUY_RATE,
             "distraction": distraction,
             "distractions": dl, "bonus_today": bonus_today}
+
+
+class ProtectedHours(BaseModel):
+    ranges: list
+
+
+@app.post("/focus/protected")
+def protected_set(p: ProtectedHours):
+    """Защищённые часы - единственный элемент времени в системе (санкция юзера).
+    Формат [["10:30","12:00"], …], диапазоны в пределах суток."""
+    clean = []
+    for r in p.ranges:
+        if (isinstance(r, list) and len(r) == 2
+                and all(re.fullmatch(r"\d{2}:\d{2}", str(x)) for x in r)
+                and r[0] < r[1]):
+            clean.append([r[0], r[1]])
+    with db() as conn:
+        set_flag(conn, "protected_hours", json.dumps(clean))
+        log_event(conn, "protected_set", ranges=json.dumps(clean))
+    return {"ok": True, "ranges": clean}
 
 
 @app.get("/focus_mode")
@@ -4161,6 +4440,7 @@ def focus_mode_page():
 if __name__ == "__main__":
     init_db()
     _focus_seed_defaults()
+    _focus_policy_setup()
     threading.Thread(target=scheduler, daemon=True).start()
     threading.Thread(target=yt_watcher, daemon=True).start()
     threading.Thread(target=focus_hosts_loop, daemon=True).start()

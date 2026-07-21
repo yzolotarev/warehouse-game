@@ -3,6 +3,8 @@
 <head>
 <link rel="icon" href="/assets/favicon.png">
 <meta charset="utf-8">
+<meta name="theme-color" content="#101014">
+<meta name="color-scheme" content="dark light">
 <link rel="stylesheet" href="/style.css">
 <script src="/theme.js"></script><script src="/welcome.js"></script><script src="/i18n.js"></script><script src="/storozh.js"></script><script src="/ambient.js"></script>
 <title>🎯 Режим Фокус</title>
@@ -60,6 +62,8 @@
 
   <a class="tasks" href="/focus_page">📋 Список задач — смотреть и делать</a>
 
+  <div id="gateCard"></div>
+
   <div id="main"></div>
 
   <div class="card">
@@ -69,8 +73,17 @@
       <input id="newPat" placeholder="слово-метка, напр. reddit" onkeydown="if(event.key==='Enter')addDis()">
       <button class="b-primary" onclick="addDis()">＋ Добавить</button>
     </div>
-    <div class="hint">Метка ищется в названии активного окна/приложения. Домены (через
-      запятую) режутся в /etc/hosts по циклу «можно/остывание» — для любого браузера.</div>
+    <div class="hint">Метка ищется в названии активного окна и в звуке браузера.
+      Домены (через запятую) режутся в /etc/hosts, пока кредит на нуле — для любого браузера.</div>
+  </div>
+
+  <div class="card">
+    <div class="lbl">🛡 Защищённые часы — блок железный, кредит не поможет</div>
+    <div class="addrow">
+      <input id="protInp" placeholder="10:30-12:00, 18:00-20:30">
+      <button class="b-primary" onclick="saveProt()">Сохранить</button>
+    </div>
+    <div class="hint">Твои пиковые часы по ActivityWatch. Пусто = защиты нет.</div>
   </div>
 
   <a class="back" href="/">← в прихожую склада</a>
@@ -82,23 +95,63 @@ async function api(p,body){const r=await fetch(p,body!==undefined?{method:'POST'
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
 function fmt(sec){sec=Math.max(0,Math.round(sec));const h=Math.floor(sec/3600),m=Math.floor(sec%3600/60),s=sec%60;
   return (h?h+':'+String(m).padStart(2,'0'):m)+':'+String(s).padStart(2,'0')}
-let ST={on:false},lastTarget=25;
+let ST={on:false},lastTarget=25,unblock=null;
 async function refresh(){
   ST=await api('/focus/state');
   if(ST.target_min)lastTarget=ST.target_min;
-  renderMain();renderDis(ST.distractions||[]);
+  renderGate();renderMain();renderDis(ST.distractions||[]);
+}
+const GATE_RU={protected:'🛡 защищённый час',penalty:'💀 штраф за срыв',
+  no_credit:'🚧 кредита нет',manual_off:'🔓 отключено честно',credit:'открыт'};
+function renderGate(){
+  const g=ST.gate||{},bal=ST.yt_balance??0;
+  const blocked=g.state==='blocked';
+  const until=g.until?` · до ${esc(String(g.until).slice(11,16)||g.until)}`:'';
+  let unbHtml='';
+  if(unblock){
+    const left=Math.max(0,Math.round((new Date(unblock.ready_at)-Date.now())/1000));
+    unbHtml=`<div class="dis" style="margin-top:10px">
+      <div class="goal" style="margin-bottom:8px">💭 ${esc(unblock.thought)}</div>
+      ${left>0?`<div class="goal">подумай… кнопка оживёт через ${left} сек</div>`
+        :`<button class="b-danger" onclick="unbConfirm()">Всё равно отключить (на час)</button>`}
+    </div>`;
+  }
+  $('#gateCard').innerHTML=`<div class="card">
+    <div class="lbl">🎬 Кредит ютуба — единая валюта</div>
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <span style="font-size:26px;font-weight:700">${bal} мин</span>
+      <span class="ph ${blocked?'blocked':'open'}">${GATE_RU[g.reason]||g.state}${until}</span>
+      ${ST.heard?`<span class="goal">🎧 слышу: ${esc(ST.heard)}</span>`:''}
+    </div>
+    <div class="addrow" style="margin-top:10px">
+      <button class="b-sec" onclick="buy(15)">+15 мин за ${15*(ST.buy_rate||1)}⭐</button>
+      <button class="b-sec" onclick="buy(30)">+30 мин за ${30*(ST.buy_rate||1)}⭐</button>
+      ${blocked&&g.reason!=='protected'?`<button class="b-ghost" onclick="unbRequest()">Отключить честно…</button>`:''}
+    </div>
+    ${g.reason==='protected'?'<div class="hint">защищённый час: отключение не работает, так задумано</div>':''}
+    ${unbHtml}
+  </div>`;
+}
+async function buy(m){try{await api('/yt_buy',{minutes:m})}catch(e){alert(e.message)}refresh()}
+async function unbRequest(){unblock=await api('/focus/unblock_request',{});renderGate()}
+async function unbConfirm(){
+  try{await api('/focus/unblock_confirm',{token:unblock.token});unblock=null}
+  catch(e){alert(e.message)}
+  refresh();
 }
 function renderMain(){
   const m=$('#main');
+  const stale=ST.aw_stale?'<div class="hint" style="color:var(--danger)">⚠ ActivityWatch молчит — челлендж на паузе, время не идёт</div>':'';
   if(ST.on){
     const d=ST.distraction;
     if(d&&d.active){
-      const left=d.deadline_epoch-Date.now()/1000;
+      const pct=Math.min(100,d.debt_sec/d.grace_sec*100);
       m.className='';
       m.innerHTML=`<div class="card big alarm">
         <div class="alarmt">⚠ Ты в «${esc(d.pattern)}» — уходи!</div>
-        <div id="timer">${fmt(left)}</div>
-        <div class="goal">до срыва фокуса. Вернись к делу — отсчёт сбросится.</div>
+        <div id="timer">${fmt(d.grace_sec-d.debt_sec)}</div>
+        <div class="goal">ведро наполняется; уйдёшь — стечёт, но вдвое медленнее</div>
+        <div class="bar"><i style="width:${pct}%;background:var(--danger)"></i></div>
         <button class="b-sec stopBtn" onclick="stop()">Сдаться (стоп)</button>
       </div>`;
       return;
@@ -110,6 +163,7 @@ function renderMain(){
       <div class="goal">цель ${ST.target_min} мин · 🎁 бонусов сегодня +${ST.bonus_today}</div>
       <div class="bar"><i style="width:${pct}%"></i></div>
       ${win?`<div class="now">сейчас: ${esc(win)}</div>`:''}
+      ${stale}
       <button class="b-sec stopBtn" onclick="stop()">Стоп</button>
     </div>`;
     return;
@@ -129,17 +183,20 @@ function renderMain(){
 function renderDis(list){
   const el=$('#disList');
   if(!list.length){el.innerHTML='<div class="hint">пусто — надзору не за чем следить</div>';return}
-  el.innerHTML=list.map(d=>{
-    const cyc=d.cooldown_min>0?
-      `<span class="ph ${d.cycle_phase}">${d.cycle_phase==='blocked'?'🚫 закрыт '+fmt(d.cycle_left):'открыт '+fmt(d.cycle_left)}</span>`:'';
-    return `<div class="dis"><div class="top">
-      <span class="pat">🚫 ${esc(d.pattern)}</span>${cyc}
+  // циклы «можно/остывание» умерли 21.07: блоком правит кредит, не часы
+  el.innerHTML=list.map(d=>`<div class="dis"><div class="top">
+      <span class="pat">🚫 ${esc(d.pattern)}</span>
       <button class="b-ghost" onclick="delDis('${esc(d.pattern)}')">✕</button></div>
-      <div class="cyc">домены <input value="${esc(d.domains||'')}" onchange="saveDis('${esc(d.pattern)}',this.closest('.dis'))" style="width:150px">
-        · можно <input type="number" min="0" value="${d.allowed_min}" data-f="allowed" onchange="saveDis('${esc(d.pattern)}',this.closest('.dis'))">
-        / остыв. <input type="number" min="0" value="${d.cooldown_min}" data-f="cooldown" onchange="saveDis('${esc(d.pattern)}',this.closest('.dis'))"> мин</div>
-    </div>`;
-  }).join('');
+      <div class="cyc">домены <input value="${esc(d.domains||'')}" onchange="saveDis('${esc(d.pattern)}',this.closest('.dis'))" style="width:220px"></div>
+    </div>`).join('');
+  const prot=(ST.protected_hours||[]).map(r=>r.join('-')).join(', ');
+  const pi=$('#protInp');
+  if(pi&&document.activeElement!==pi)pi.value=prot;
+}
+async function saveProt(){
+  const ranges=$('#protInp').value.split(',').map(s=>s.trim()).filter(Boolean)
+    .map(s=>s.split('-').map(x=>x.trim()));
+  await api('/focus/protected',{ranges});refresh();
 }
 async function start(){
   const t=+($('#tgt')||{}).value||lastTarget;
@@ -152,21 +209,16 @@ async function addDis(){
 }
 async function delDis(p){await api('/focus/distraction_del',{pattern:p});refresh();}
 async function saveDis(p,row){
-  const doms=row.querySelector('.cyc input[style]').value;
-  const al=+row.querySelector('[data-f=allowed]').value||0;
-  const cd=+row.querySelector('[data-f=cooldown]').value||0;
-  await api('/focus/distraction',{pattern:p,domains:doms,allowed_min:al,cooldown_min:cd});refresh();
+  const doms=row.querySelector('.cyc input').value;
+  await api('/focus/distraction',{pattern:p,domains:doms});refresh();
 }
 refresh();
 setInterval(()=>{
-  // во время челленджа и тревоги тикаем часто и локально, иначе реже
-  if(ST.on){
-    if(ST.distraction&&ST.distraction.active){
-      const left=ST.distraction.deadline_epoch-Date.now()/1000;
-      const t=$('#timer');if(t)t.textContent=fmt(left);
-      if(left<=0)refresh();
-    }else{const t=$('#timer');if(t)t.textContent=fmt(++ST.elapsed);}
+  // локальный тик секунд между опросами; ведро тревоги обновляет сам refresh
+  if(ST.on&&!(ST.distraction&&ST.distraction.active)){
+    const t=$('#timer');if(t&&!ST.aw_stale)t.textContent=fmt(++ST.elapsed);
   }
+  if(unblock)renderGate(); // отсчёт паузы честного выхода
 },1000);
 setInterval(refresh,3000);
 </script>

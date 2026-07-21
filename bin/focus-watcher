@@ -141,11 +141,12 @@ class Overlay:
             self._use_challenge_widgets()
             d = st.get("distraction")
             if d and d.get("active"):
-                left = d["deadline_epoch"] - time.time()
+                # 21.07: ведро вместо дедлайна - показываем, сколько осталось до края
+                left = d.get("grace_sec", 30) - d.get("debt_sec", 0)
                 self._paint(ALARM_BG, "#e0454d")
                 self.title.config(text=f"⚠ {d.get('pattern')} — уходи!", fg="#ff8a8a")
                 self.time.config(text=fmt(left), fg="#ff5a5a")
-                self.sub.config(text="иначе фокус сорвётся", fg="#e0a0a0")
+                self.sub.config(text="ведро наполняется — иначе срыв", fg="#e0a0a0")
             else:
                 self._paint(CALM_BG, "#5b5be6")
                 self.title.config(text="🎯 Фокус", fg="#a9a9ff")

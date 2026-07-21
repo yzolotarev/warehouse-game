@@ -3,7 +3,7 @@
 #   окна нет         → запустить Chrome --app
 #   окно не в фокусе → сфокусировать
 #   окно в фокусе    → свернуть
-URL="http://127.0.0.1:8091/"
+URL="http://127.0.0.1:8091/app"
 
 # окно Chrome --app получает WM_CLASS вида "127.0.0.1.Google-chrome"
 WIN=$(wmctrl -x -l | awk '/ 127\.0\.0\.1\./{print $1; exit}')
@@ -14,4 +14,5 @@ if [ -n "$WIN" ]; then
     fi
     exec wmctrl -i -a "$WIN"
 fi
-exec google-chrome --app="$URL"
+# --disable-quic: QUIC (UDP) не проходит через VLESS-цепочку до ютуба - Chrome видит «нет сети» (21.07)
+exec google-chrome --disable-quic --app="$URL"

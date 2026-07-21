@@ -1,6 +1,9 @@
 /* Тема панелей: auto (за системой) / light / dark. Хранится в localStorage.whTheme. */
 (function () {
   "use strict";
+  // миграция 21.07: тёмная тема стала дефолтом; один раз переключаем всех,
+  // дальше тумблер юзера снова главный
+  if (!localStorage.whThemeDark21) { localStorage.whTheme = "dark"; localStorage.whThemeDark21 = "1"; }
   // auto = по времени суток: день (08-20) светлая бумага, вечер/ночь - тёмная
   const byClock = () => { const h = new Date().getHours(); return h >= 8 && h < 20 ? "light" : "dark"; };
   const resolve = t => t === "auto" ? byClock() : t;

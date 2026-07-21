@@ -10,6 +10,16 @@
    клиент НЕ ждёт ответа - играет прошлый выбор, свежий применится на след. заходе. */
 (function () {
   if (location.pathname.startsWith("/capture")) return; // секундное окно захвата
+  // Внутри оболочки /app (iframe): фон рисует родитель. Здесь - только сделать
+  // страницу прозрачной, чтобы родительский слой просвечивал, и выйти.
+  if (window.self !== window.top) {
+    const clear = () => {
+      document.documentElement.style.background = "transparent";
+      document.body.style.background = "transparent";
+    };
+    (document.body) ? clear() : document.addEventListener("DOMContentLoaded", clear);
+    return;
+  }
   const LS = "wh_ambient", LSPOS = "wh_amb_pos", LSPICK = "wh_amb_pick";
   // Ютуб-пресеты (дефолт по решению юзера 21.07: ютуб универсален - «на изи фон
   // добавить»; нужен вход в YouTube-аккаунт в Chrome, иначе «вы не бот»).
@@ -23,6 +33,8 @@
   ];
   let st = { on: false, src: "y:" + YT[0].id, sound: false, custom: [] };
   try { st = Object.assign(st, JSON.parse(localStorage.getItem(LS) || "{}")); } catch (e) {}
+  // миграция 21.07: фон включён по умолчанию; один раз включаем, дальше решает юзер
+  if (!localStorage.whAmbOn21) { st.on = true; localStorage.whAmbOn21 = "1"; }
   const save = () => localStorage.setItem(LS, JSON.stringify(st));
   let files = [], pick = null;
   try { pick = JSON.parse(localStorage.getItem(LSPICK) || "null"); } catch (e) {}
@@ -80,8 +92,11 @@
 
   async function refreshPick() {
     try {
+      // в оболочке /app реальная страница - внутри iframe
+      let pg = location.pathname;
+      try { const f = document.getElementById("wh"); if (f) pg = f.contentWindow.location.pathname; } catch (e) {}
       const p = await (await fetch("/ambient_pick?page=" +
-        encodeURIComponent(location.pathname.replace(/^\//, "")))).json();
+        encodeURIComponent(pg.replace(/^\//, "")))).json();
       if (p && p.file) {
         const stale = !pick || pick.file !== p.file;
         pick = p; localStorage.setItem(LSPICK, JSON.stringify(p));
@@ -155,7 +170,7 @@
       const id = src.slice(2);
       const p = `autoplay=1&mute=${st.sound ? 0 : 1}&loop=1&playlist=${id}&controls=0&rel=0&iv_load_policy=3`;
       html = `<iframe class="ready" data-k="${src}:${st.sound}" `
-        + `src="https://www.youtube-nocookie.com/embed/${id}?${p}" allow="autoplay"></iframe>`;
+        + `src="https://www.youtube.com/embed/${id}?${p}" allow="autoplay"></iframe>`;
     }
     const key = src.startsWith("f:") ? src : src + ":" + st.sound;
     const cur = layer.firstElementChild;
