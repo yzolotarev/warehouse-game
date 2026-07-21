@@ -95,7 +95,11 @@
     if (st.on) mount(); // не ждём сеть: играем прошлый выбор сразу
     try { files = (await (await fetch("/ambient_list")).json()).files || []; } catch (e) {}
     render();
-    if (st.on && st.src === "auto") refreshPick();
+    if (st.on && st.src === "auto") await refreshPick();
+    // список файлов теперь известен - домонтировать, даже если pick не менялся
+    // (баг: при совпадении сохранённого и серверного выбора видео не вставлялось,
+    //  и юзеру приходилось жать «авто» руками)
+    if (st.on) mount();
   });
 
   async function refreshPick() {
@@ -154,6 +158,14 @@
 
   function curSrc() {
     if (st.src === "auto") return pick && pick.file ? "f:" + pick.file : (files.length ? "f:" + files[0] : "");
+    // ютуб-пресет с локальным двойником → играем файл: то же видео, 1080p,
+    // без «вы не бот» и живёт под шлагбаумом. Живой iframe - только для
+    // пользовательских ссылок, у которых двойника на диске нет.
+    if (st.src.startsWith("y:")) {
+      const p = YT.find(x => "y:" + x.id === st.src);
+      const twin = p && files.find(f => f.replace(/\.[^.]+$/, "") === p.name);
+      if (twin) return "f:" + twin;
+    }
     return st.src;
   }
   function posLoad() { try { return JSON.parse(localStorage.getItem(LSPOS) || "{}"); } catch (e) { return {}; } }
