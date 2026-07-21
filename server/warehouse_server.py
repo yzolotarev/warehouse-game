@@ -489,15 +489,73 @@ def ambient_js():
     return FileResponse(Path(__file__).parent / "ambient.js", media_type="text/javascript")
 
 
+def _ambient_files():
+    d = Path(__file__).parent / "assets" / "ambient"
+    if not d.is_dir():
+        return []
+    return sorted(f.name for f in d.iterdir()
+                  if f.suffix.lower() in (".mp4", ".webm", ".mov"))
+
+
 @app.get("/ambient_list")
 def ambient_list():
     """Локальные амбиенс-фоны (#307): всё, что лежит в assets/ambient/.
     Кинул файл в папку - появился в меню фонов, имя = имя файла."""
-    d = Path(__file__).parent / "assets" / "ambient"
-    if not d.is_dir():
-        return {"files": []}
-    return {"files": sorted(f.name for f in d.iterdir()
-                            if f.suffix.lower() in (".mp4", ".webm", ".mov"))}
+    return {"files": _ambient_files()}
+
+
+AMBIENT_PICK_TTL = 1800  # сек; чаще LLM не дёргаем - фон не должен скакать
+
+
+@app.get("/ambient_pick")
+def ambient_pick(page: str = ""):
+    """Режим «авто» (запрос юзера 21.07): фон выбирает система по СИТУАЦИИ.
+    База - детерминированное правило (разбор → бодрее, ночь → тише), поверх -
+    LLM (тот же конфиг, что у сторожа) с кэшем на полчаса; LLM лёг → правило.
+    Клиент не ждёт ответа: играет прошлый выбор, этот - на следующий заход."""
+    files = _ambient_files()
+    if not files:
+        return {"file": None, "reason": ""}
+    with db() as conn:
+        try:
+            cache = json.loads(get_flag(conn, "ambient_pick") or "null")
+        except Exception:
+            cache = None
+        counts = {r["shelf"]: r["c"] for r in conn.execute(
+            "SELECT shelf, COUNT(*) c FROM boxes GROUP BY shelf")}
+    now_ts = datetime.now().timestamp()
+    if cache and cache.get("file") in files and now_ts - cache.get("ts", 0) < AMBIENT_PICK_TTL:
+        return {"file": cache["file"], "reason": cache.get("reason", ""), "cached": True}
+    hour = datetime.now().hour
+
+    def find(sub):
+        return next((f for f in files if sub in f.lower()), None)
+
+    if page.startswith(("terminal", "focus_triage")) and find("brainscorcher"):
+        file, reason = find("brainscorcher"), "разбор - нужен темп"
+    elif hour >= 22 or hour < 6:
+        file, reason = find("поезд") or files[0], "поздний час - тихий фон"
+    else:
+        file, reason = find("outpost") or files[0], "дневной дефолт"
+    try:
+        cfg = json.loads(LLM_CFG_PATH.read_text())
+        names = "\n".join(f"- {f}" for f in files)
+        q = (f"Выбери фон для интерфейса таск-системы. Доступные видео-фоны:\n{names}\n"
+             f"Ситуация: час {hour}, страница «{page or 'меню'}», во входящих "
+             f"{counts.get('inbox', 0)} задач, в фокусе {counts.get('focus', 0)}.\n"
+             "Логика: разбор задач - фон с темпом; поздний вечер/усталость - самый тихий; "
+             "обычная работа - нейтральный пейзаж. Ответь СТРОГО одним JSON: "
+             '{"file": "<точное имя файла из списка>", "reason": "<почему, до 8 слов>"}')
+        out = _llm_zen(cfg, [{"role": "user", "content": q}])
+        j = json.loads(out[out.find("{"):out.rfind("}") + 1])
+        if j.get("file") in files:
+            file, reason = j["file"], (j.get("reason") or "")[:80]
+    except Exception:
+        pass  # правило уже выбрало
+    with db() as conn:
+        set_flag(conn, "ambient_pick", json.dumps(
+            {"file": file, "reason": reason, "ts": now_ts}, ensure_ascii=False))
+    return {"file": file, "reason": reason}
 
 
 @app.get("/juice.js")

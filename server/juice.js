@@ -30,17 +30,20 @@
       const hex=cs.getPropertyValue('--ok').trim().replace('#','');
       col=`rgba(${parseInt(hex.slice(0,2),16)},${parseInt(hex.slice(2,4),16)},${parseInt(hex.slice(4,6),16)},`;
     }
-    [['left','90deg'],['right','270deg']].forEach(([side,dir])=>{
+    // 21.07: было - широкие вспышки 14vw; с живым амбиенс-фоном они кричали и
+    // дёргали картинку (большая перерисовка). Теперь - тонкая световая кромка:
+    // тот же цвет-прогресс, но тихо и дёшево (только opacity, ничего не двигается).
+    ['left','right'].forEach(side=>{
       const el=document.createElement('div');
-      el.style.cssText=`position:fixed;top:0;bottom:0;${side}:0;width:14vw;max-width:120px;`
-        +`pointer-events:none;z-index:9998;background:linear-gradient(${dir},${col}.32) 0%,transparent 100%);`
-        +`opacity:0;transform:scaleX(.55);transform-origin:${side};`
-        +'transition:opacity .12s ease-out,transform .12s ease-out;';
+      el.style.cssText=`position:fixed;top:0;bottom:0;${side}:0;width:3px;`
+        +`pointer-events:none;z-index:9998;background:${col}.55);`
+        +`box-shadow:0 0 18px 2px ${col}.35);`
+        +'opacity:0;transition:opacity .18s ease-out;';
       document.body.appendChild(el);
-      requestAnimationFrame(()=>{el.style.opacity='1';el.style.transform='scaleX(1)'});
-      setTimeout(()=>{el.style.transition='opacity .38s ease,transform .38s ease';
-        el.style.opacity='0';el.style.transform='scaleX(.85)';
-        setTimeout(()=>el.remove(),420)},170);
+      requestAnimationFrame(()=>{el.style.opacity='1'});
+      setTimeout(()=>{el.style.transition='opacity .6s ease';
+        el.style.opacity='0';
+        setTimeout(()=>el.remove(),650)},200);
     });
   }
   // juice(kind?, progress?) — дёргать на любом рутинном микродействии.

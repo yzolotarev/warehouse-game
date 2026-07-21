@@ -5,7 +5,7 @@
   const byClock = () => { const h = new Date().getHours(); return h >= 8 && h < 20 ? "light" : "dark"; };
   const resolve = t => t === "auto" ? byClock() : t;
   const apply = () => {
-    document.documentElement.dataset.theme = resolve(localStorage.whTheme || "auto");
+    document.documentElement.dataset.theme = resolve(localStorage.whTheme || "dark");
   };
   apply();
   setInterval(apply, 60000);
@@ -15,9 +15,9 @@
     const b = document.createElement("div");
     b.id = "themeTgl";
     b.title = "тема: авто → светлая → тёмная";
-    b.textContent = icons[localStorage.whTheme || "auto"];
+    b.textContent = icons[localStorage.whTheme || "dark"];
     b.onclick = () => {
-      const cur = localStorage.whTheme || "auto";
+      const cur = localStorage.whTheme || "dark";
       const next = cur === "auto" ? "light" : cur === "light" ? "dark" : "auto";
       localStorage.whTheme = next;
       b.textContent = icons[next];
