@@ -78,13 +78,15 @@
       Домены (через запятую) режутся в /etc/hosts, пока кредит на нуле — для любого браузера.</div>
   </div>
 
-  <div class="card">
-    <div class="lbl">🛡 Защищённые часы — блок железный, кредит не поможет</div>
+  <div class="card" style="border-color:var(--danger)">
+    <div class="lbl" style="color:var(--danger)">🔒 Жёсткое расписание — глухой блок (Frozen)</div>
     <div class="addrow">
-      <input id="protInp" placeholder="10:30-12:00, 18:00-20:30">
+      <input id="protInp" placeholder="09:00-13:00, 14:00-19:00">
       <button class="b-primary" onclick="saveProt()">Сохранить</button>
     </div>
-    <div class="hint">Твои пиковые часы по ActivityWatch. Пусто = защиты нет.</div>
+    <div class="hint">В эти часы ютуб/тг/rutube/vk выключены <b>наглухо</b>: ни кредит,
+      ни глотки, ни typing-challenge не работают — выхода нет до конца окна. Это самый
+      жёсткий режим. Ставь сюда часы, когда точно нельзя залипать. Пусто = только кредит.</div>
   </div>
 
   <a class="back" href="/">← в прихожую склада</a>
@@ -102,7 +104,7 @@ async function refresh(){
   if(ST.target_min)lastTarget=ST.target_min;
   renderGate();renderMain();renderDis(ST.distractions||[]);
 }
-const GATE_RU={protected:'🛡 защищённый час',penalty:'💀 штраф за срыв',
+const GATE_RU={protected:'🔒 жёсткий блок',penalty:'💀 штраф за срыв',
   no_credit:'🚧 кредита нет',manual_off:'🔓 отключено честно',credit:'открыт',
   cooldown:'😴 остывание'};
 function mmss(s){s=Math.max(0,Math.round(s));return Math.floor(s/60)+':'+String(s%60).padStart(2,'0')}
@@ -137,7 +139,7 @@ function renderGate(){
       <button class="b-sec" onclick="buy(30)">+30 мин за ${30*(ST.buy_rate||1)}⭐</button>
       ${blocked&&g.reason!=='protected'?`<button class="b-ghost" onclick="unbRequest()">Отключить честно…</button>`:''}
     </div>
-    ${g.reason==='protected'?'<div class="hint">защищённый час: отключение не работает, так задумано</div>':''}
+    ${g.reason==='protected'?'<div class="hint">жёсткое расписание: выхода нет до конца окна</div>':''}
     ${unbHtml}
   </div>`;
 }

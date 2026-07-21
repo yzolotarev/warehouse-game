@@ -44,7 +44,7 @@
     localStorage.setItem(LS, JSON.stringify(st));
   }
   const save = () => localStorage.setItem(LS, JSON.stringify(st));
-  let files = [], pick = null;
+  let files = [], pick = null, filesLoaded = false;
   try { pick = JSON.parse(localStorage.getItem(LSPICK) || "null"); } catch (e) {}
 
   const css = document.createElement("style");
@@ -94,6 +94,7 @@
     document.body.appendChild(btn); document.body.appendChild(panel);
     if (st.on) mount(); // не ждём сеть: играем прошлый выбор сразу
     try { files = (await (await fetch("/ambient_list")).json()).files || []; } catch (e) {}
+    filesLoaded = true;
     render();
     if (st.on && st.src === "auto") await refreshPick();
     // список файлов теперь известен - домонтировать, даже если pick не менялся
@@ -163,6 +164,10 @@
     // пользовательских ссылок, у которых двойника на диске нет.
     if (st.src.startsWith("y:")) {
       const p = YT.find(x => "y:" + x.id === st.src);
+      // пресет с ИЗВЕСТНЫМ (по списку YT) двойником - ждём загрузки /ambient_list,
+      // чтобы не проскочить на живой ютуб-embed со звуком (mute= в его URL
+      // ненадёжен) в те же доли секунды, пока список файлов ещё не пришёл.
+      if (p && !filesLoaded) return "";
       const twin = p && files.find(f => f.replace(/\.[^.]+$/, "") === p.name);
       if (twin) return "f:" + twin;
     }
@@ -188,7 +193,11 @@
         + `autoplay loop playsinline preload="auto" ${st.sound ? "" : "muted"}></video>`;
     } else if (src.startsWith("y:")) {
       const id = src.slice(2);
-      const p = `autoplay=1&mute=${st.sound ? 0 : 1}&loop=1&playlist=${id}&controls=0&rel=0&iv_load_policy=3`;
+      // mute=1 в URL - НЕ гарантия (в отличие от muted-атрибута у <video>):
+      // ютуб иногда игнорирует его при автоплее. Добиваем через postMessage
+      // JS API (enablejsapi=1) - см. armIframeMute ниже.
+      const p = `autoplay=1&mute=${st.sound ? 0 : 1}&loop=1&playlist=${id}`
+        + `&controls=0&rel=0&iv_load_policy=3&enablejsapi=1&origin=${encodeURIComponent(location.origin)}`;
       html = `<iframe class="ready" data-k="${src}:${st.sound}" `
         + `src="https://www.youtube.com/embed/${id}?${p}" allow="autoplay"></iframe>`;
     }
@@ -216,6 +225,21 @@
       }
       v.play().catch(() => {});
     }
+    const ifr = layer.querySelector("iframe");
+    if (ifr) armIframeMute(ifr);
+  }
+  // ютуб-плеер в iframe не всегда слушается mute=1 в URL при автоплее -
+  // досылаем команду через postMessage (JS API) несколько раз с задержкой,
+  // т.к. плеер может быть не готов принимать команды в первые сотни мс.
+  function armIframeMute(ifr) {
+    const send = () => {
+      try {
+        ifr.contentWindow.postMessage(JSON.stringify({
+          event: "command", func: st.sound ? "unMute" : "mute", args: []
+        }), "*");
+      } catch (e) {}
+    };
+    [0, 300, 800, 1500].forEach(t => setTimeout(send, t));
   }
   function restoreBg() {
     document.documentElement.style.background = "";

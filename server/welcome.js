@@ -110,6 +110,7 @@
   }
 
   function tryTrigger(){
+    return false; // временно заморожено 21.07 по просьбе юзера - раскомментировать строку ниже, чтобы вернуть
     if(location.pathname!=="/hub")return false;
     const until=Number(localStorage.whMusicUntil||0);
     if(until>Date.now())return false; // сессия уже идёт где-то в приложении - не рестартовать
@@ -133,7 +134,7 @@
 
   // скрипт подключён в <head> - document.body ещё не существует в момент
   // разбора файла, дожидаемся готовности документа перед вставкой элементов.
-  function boot(){ if(!tryTrigger())tryResume(); }
+  function boot(){ tryTrigger(); } // tryResume() отключён вместе с tryTrigger - см. заморозку выше
   if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",boot);
   else boot();
 })();
