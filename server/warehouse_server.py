@@ -4026,16 +4026,28 @@ def _flush_dns():
         pass
 
 
+def _clash_secret():
+    try:
+        return open(os.path.expanduser("~/productivity-blocks/.clash-secret")).read().strip()
+    except Exception:
+        return ""
+
+
 def _singbox_yt(blocked):
     """Щёлкает sing-box gate по clash-api: закрыт → ютуб в чёрную дыру (RST),
     открыт → нормальный маршрут. Сеть-уровень, режет любой браузер, рвёт живое
-    соединение. sing-box лежит/нет clash → тихо мимо (hosts остаётся страховкой)."""
+    соединение. Пароль (Bearer) - иначе curl снимал бы блок в обход трения.
+    sing-box лежит/нет clash → тихо мимо (hosts остаётся страховкой)."""
     target = "yt-blackhole" if blocked else "grp-yt"
     try:
+        headers = {"Content-Type": "application/json"}
+        sec = _clash_secret()
+        if sec:
+            headers["Authorization"] = f"Bearer {sec}"
         req = urllib.request.Request(
             f"{SINGBOX_CLASH}/proxies/{SINGBOX_YT_SELECTOR}",
             data=json.dumps({"name": target}).encode(),
-            method="PUT", headers={"Content-Type": "application/json"})
+            method="PUT", headers=headers)
         urllib.request.urlopen(req, timeout=5)
     except Exception:
         pass
@@ -4486,44 +4498,60 @@ def yt_buy(b: YtBuy):
     return {"ok": True, "added": add}
 
 
+# Typing-challenge (закалка из open-turkey 21.07): чтобы снять блок, набери 300
+# случайных символов без ошибки. Разный регистр + цифры + символы = медленный набор
+# (Shift-переключения). 3-5 минут = импульс проходит. secrets = крипто-стойко,
+# строку не предугадать и не вставить заранее.
+UNBLOCK_CHARS = 300
+CHALLENGE_CHARSET = ("abcdefghijklmnopqrstuvwxyz"
+                     "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%&*")
+
+
 @app.post("/focus/unblock_request")
 def unblock_request():
-    """Трение выхода (21.07): вместо стены - твоя же мысль + 60 сек паузы.
-    Возвращает случайную мысль юзера и токен; confirm оживёт через UNBLOCK_WAIT_SEC."""
+    """Трение выхода: твоя мысль + typing-challenge на 300 символов (порт open-turkey).
+    Возвращает мысль, строку-челлендж и токен; confirm ждёт точный ввод строки."""
+    import secrets as _secrets
+    challenge = "".join(_secrets.choice(CHALLENGE_CHARSET) for _ in range(UNBLOCK_CHARS))
     with db() as conn:
         row = conn.execute(
             "SELECT raw_text FROM boxes WHERE shelf IN ('archived','mind','inbox') "
             "AND length(raw_text) BETWEEN 20 AND 300 "
             "ORDER BY RANDOM() LIMIT 1").fetchone()
         token = uuid.uuid4().hex
-        ready = (datetime.now() + timedelta(seconds=UNBLOCK_WAIT_SEC)) \
-            .isoformat(timespec="seconds")
         set_flag(conn, "unblock_token", token)
-        set_flag(conn, "unblock_ready_at", ready)
+        set_flag(conn, "unblock_challenge", challenge)
         log_event(conn, "unblock_request")
     return {"thought": row["raw_text"] if row else "Зачем я это делаю прямо сейчас?",
-            "token": token, "ready_at": ready, "wait_sec": UNBLOCK_WAIT_SEC}
+            "token": token, "challenge": challenge, "chars": UNBLOCK_CHARS}
 
 
 class UnblockConfirm(BaseModel):
     token: str
+    typed: str = ""
 
 
 @app.post("/focus/unblock_confirm")
 def unblock_confirm(u: UnblockConfirm):
     with db() as conn:
         tok = get_flag(conn, "unblock_token")
-        ready = get_flag(conn, "unblock_ready_at")
-        now = datetime.now().isoformat(timespec="seconds")
+        challenge = get_flag(conn, "unblock_challenge")
         if not tok or u.token != tok:
             raise HTTPException(403, "нет активного запроса на отключение")
-        if not ready or now < ready:
-            raise HTTPException(403, "пауза ещё идёт - подожди")
+        if u.typed != challenge:
+            # находим первую ошибку - помочь добить (как в open-turkey)
+            pos = next((i for i in range(min(len(u.typed), len(challenge)))
+                        if u.typed[i] != challenge[i]), min(len(u.typed), len(challenge)))
+            if len(u.typed) < len(challenge) and pos == len(u.typed):
+                detail = f"коротко: набрано {len(u.typed)} из {len(challenge)}"
+            else:
+                detail = f"ошибка на символе {pos + 1} - набери точно"
+            raise HTTPException(403, detail)
         off = (datetime.now() + timedelta(minutes=UNBLOCK_OFF_MIN)) \
             .isoformat(timespec="seconds")
         set_flag(conn, "yt_off_until", off)
         set_flag(conn, "unblock_token", "")
-        set_flag(conn, "unblock_ready_at", "")
+        set_flag(conn, "unblock_challenge", "")
         log_event(conn, "unblock_confirm", off_until=off)
     # защищённые часы сильнее честного отключения - гейт сам это учитывает
     return {"ok": True, "off_until": off}

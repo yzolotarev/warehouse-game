@@ -112,11 +112,16 @@ function renderGate(){
   const until=g.until?` · до ${esc(String(g.until).slice(11,16)||g.until)}`:'';
   let unbHtml='';
   if(unblock){
-    const left=Math.max(0,Math.round((new Date(unblock.ready_at)-Date.now())/1000));
+    // typing-challenge: набери 300 символов точно, чтобы снять блок (трение против импульса)
+    const rows=(unblock.challenge.match(/.{1,60}/g)||[]).join('\n');
     unbHtml=`<div class="dis" style="margin-top:10px">
       <div class="goal" style="margin-bottom:8px">💭 ${esc(unblock.thought)}</div>
-      ${left>0?`<div class="goal">подумай… кнопка оживёт через ${left} сек</div>`
-        :`<button class="b-danger" onclick="unbConfirm()">Всё равно отключить (на час)</button>`}
+      <div class="goal" style="margin-bottom:6px">Чтобы снять блок на час — набери эти ${unblock.chars} символов точно:</div>
+      <pre style="white-space:pre-wrap;word-break:break-all;font-size:12px;background:var(--bg);padding:8px;border-radius:6px;user-select:none;margin:0 0 8px">${esc(rows)}</pre>
+      <textarea id="unbType" rows="4" style="width:100%;box-sizing:border-box;font-family:monospace;font-size:12px;padding:6px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--fg)" placeholder="набирай здесь…" oninput="unbProgress()"></textarea>
+      <div class="goal" id="unbCnt" style="margin:4px 0 8px">0 / ${unblock.chars}</div>
+      <button class="b-danger" onclick="unbConfirm()">Сверить и отключить</button>
+      <button class="b-ghost" onclick="unblock=null;renderGate()">Отмена</button>
     </div>`;
   }
   $('#gateCard').innerHTML=`<div class="card">
@@ -138,9 +143,18 @@ function renderGate(){
 }
 async function buy(m){try{await api('/yt_buy',{minutes:m})}catch(e){alert(e.message)}refresh()}
 async function unbRequest(){unblock=await api('/focus/unblock_request',{});renderGate()}
+function unbProgress(){
+  const t=$('#unbType'),c=$('#unbCnt');if(!t||!c)return;
+  const n=t.value.length,tot=unblock.chars;
+  // подсветка: где начал расходиться - видно сразу
+  let ok=0;while(ok<n&&ok<unblock.challenge.length&&t.value[ok]===unblock.challenge[ok])ok++;
+  c.textContent=`${n} / ${tot}`+(n>ok?` · ошибка на символе ${ok+1}`:(n===tot?' · готово, жми сверить':''));
+  c.style.color=(n>ok)?'var(--danger)':(n===tot?'var(--green)':'var(--dim)');
+}
 async function unbConfirm(){
-  try{await api('/focus/unblock_confirm',{token:unblock.token});unblock=null}
-  catch(e){alert(e.message)}
+  const typed=($('#unbType')||{}).value||'';
+  try{await api('/focus/unblock_confirm',{token:unblock.token,typed});unblock=null}
+  catch(e){alert(e.message);return}
   refresh();
 }
 function renderMain(){
@@ -222,9 +236,9 @@ setInterval(()=>{
   if(ST.on&&!(ST.distraction&&ST.distraction.active)){
     const t=$('#timer');if(t&&!ST.aw_stale)t.textContent=fmt(++ST.elapsed);
   }
-  if(unblock)renderGate(); // отсчёт паузы честного выхода
 },1000);
-setInterval(refresh,3000);
+// пока идёт typing-challenge - НЕ перерисовываем (иначе затрём набранное)
+setInterval(()=>{if(!unblock)refresh()},3000);
 </script>
 </body>
 </html>
