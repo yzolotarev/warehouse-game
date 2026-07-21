@@ -11,7 +11,17 @@
 (function () {
   if (location.pathname.startsWith("/capture")) return; // секундное окно захвата
   const LS = "wh_ambient", LSPOS = "wh_amb_pos", LSPICK = "wh_amb_pick";
-  let st = { on: false, src: "auto", sound: false, custom: [] };
+  // Ютуб-пресеты (дефолт по решению юзера 21.07: ютуб универсален - «на изи фон
+  // добавить»; нужен вход в YouTube-аккаунт в Chrome, иначе «вы не бот»).
+  // Локальные файлы из /ambient_list - качество (1080) и офлайн-запас.
+  const YT = [
+    { id: "s_S-d4mdaZI", name: "🏚 outpost" },
+    { id: "bXhClCtIQe0", name: "🚧 roads to nowhere" },
+    { id: "1DFqf7Uu0hs", name: "🔥 brainscorcher" },
+    { id: "Z5_-59tIG-8", name: "🌩 гроза над деревней" },
+    { id: "VNPKlVq0z2Y", name: "🚂 поезд в никуда" },
+  ];
+  let st = { on: false, src: "y:" + YT[0].id, sound: false, custom: [] };
   try { st = Object.assign(st, JSON.parse(localStorage.getItem(LS) || "{}")); } catch (e) {}
   const save = () => localStorage.setItem(LS, JSON.stringify(st));
   let files = [], pick = null;
@@ -85,7 +95,9 @@
     btn.textContent = st.on ? "🌦" : "🌫";
     const rows =
       row("auto", "🎲 авто (по ситуации)") +
-      files.map(f => row("f:" + f, f.replace(/\.[^.]+$/, ""))).join("") +
+      YT.map(p => row("y:" + p.id, p.name)).join("") +
+      // локальные копии тех же фонов - пометка 💾 (офлайн/качество)
+      files.map(f => row("f:" + f, f.replace(/\.[^.]+$/, "") + " 💾")).join("") +
       (st.custom || []).map(c => row("y:" + c.id, c.name)).join("");
     panel.innerHTML = `
       <button class="amb-row" data-a="off">${st.on ? "⬛ Выключить фон" : "▶ Включить фон"}</button>
