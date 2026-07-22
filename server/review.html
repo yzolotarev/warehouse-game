@@ -143,18 +143,26 @@ function palletStep(){
     <div class="steps">${steps}</div>
     <div class="q">Проект живёт? Дай следующий шаг — или заморозь.</div>
     <input id="ns" placeholder="следующий одношаговый шаг (уедет в 🎯)">
-    <div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px">
       <button class="b-sec" onclick="palletAdd(${p.id})">→ 🎯 шаг в фокус</button>
       <button onclick="palletOk()">Шаг уже есть ›</button>
       <button class="b-ghost" onclick="palletSuggest(${p.id}, this)">🧠 Предложи шаг</button>
     </div>
-    <div style="margin-top:8px">
-      <button class="b-ghost" onclick="palletScary(${p.id})">😰 Трудно понять, что дальше</button>
-      <button class="b-ghost" onclick="palletFreeze(${p.id})">🧊 Заморозить</button>
-      <button class="b-danger" onclick="delPalletRev(${p.id})">🗑 Удалить проект</button>
+    <div style="margin-top:12px">
+      <span id="mArr" style="cursor:pointer;color:var(--dim);font-size:12px" onclick="toggleMore()">▾ ещё</span>
+      <div id="mRow" style="display:none;margin-top:8px">
+        <button class="b-ghost" style="font-size:12.5px;padding:8px 12px" onclick="palletScary(${p.id})">😰 Трудно понять, что дальше</button>
+        <button class="b-ghost" style="font-size:12.5px;padding:8px 12px" onclick="palletFreeze(${p.id})">🧊 Заморозить</button>
+        <button class="b-danger" style="font-size:12.5px;padding:8px 12px" onclick="delPalletRev(${p.id})">🗑 Удалить проект</button>
+      </div>
     </div>
   </div>`;
   $('#ns').focus();
+}
+function toggleMore(){
+  const r=$('#mRow'),open=r.style.display!=='none';
+  r.style.display=open?'none':'block';
+  $('#mArr').textContent=open?'▾ ещё':'▴ скрыть';
 }
 async function palletAdd(pid){
   const v=$('#ns').value.trim(); if(!v){$('#ns').focus();return}

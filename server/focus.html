@@ -101,16 +101,7 @@ function render(){
   const ytRow=b.yt?`<div class="meta" style="margin-top:10px">🎬 этот шаг даст +${b.yt} мин перекуса (иногда 🎲 больше)</div>`:'';
   const sib=b.pallet_id&&items.some(o=>o.id!==b.id&&o.pallet_id===b.pallet_id);
   const hint=(sib&&!b.series)?'<div class="meta" style="margin-top:10px">💡 в фокусе ещё шаг этой паллеты: второй за день пойдёт серией, с бонусом</div>':'';
-  const staleRow=stale?`<div style="margin-top:12px">
-      <button class="b-ghost" onclick="shelve(${b.id})">🗄 На стеллаж (позже)</button>
-    </div>`:'';
-  // 👁 распознавание старого: со второго захода подсознание уже вынесло вердикт -
-  // либо «неактуально», либо «я знаю решение». Обе кнопки - выходы из склада
-  const visitRow=(b.visits>=2)?`<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line)">
-      <div class="meta" style="margin-bottom:6px">👁 заход №${b.visits} · лежит с ${b.born_at.slice(0,10)}</div>
-      <button class="b-ghost" onclick="recognize(${b.id},'stale')">🗑 Уже неактуально</button>
-      <button class="b-ghost" onclick="recognize(${b.id},'known')">💡 Я знаю решение — в фокус</button>
-    </div>`:'';
+  // 👁 распознавание старого (визит≥2) и 🗄 на стеллаж (stale) переехали в «▾ ещё»
   const isThink=b.scary_kind==='think';
   const isThinkPallet=b.scary_kind==='think_pallet';
   const isReturned=b.scary_kind==='returned';
@@ -142,24 +133,40 @@ function render(){
       <button class="b-danger" title="удалить" onclick="toTrash(${b.id})">🗑</button>
     </div>`;
   }else{
+    // «ещё»: всё нечастое — таймер, вывесить, страшно, разбить, + условные стеллаж/распознавание
+    const timerBtn=`<span id="timer-row">
+      <span id="timer-elapsed" style="font-size:13px;color:var(--vio);${timerBoxId===b.id?'':'display:none'}">${timerBoxId===b.id&&timerSession?fmtElapsed(Math.floor((Date.now()-new Date(timerSession.started_at+'Z').getTime())/1000)):''}</span>
+      <button class="${timerBoxId===b.id?'b-sec':'b-ghost'}" style="font-size:12.5px;padding:8px 12px;${timerBoxId===b.id?'border-color:var(--vio)':''}" id="timer-btn" onclick="toggleTimer(${b.id})">${timerBoxId===b.id?'⏹ Стоп':'▶ Таймер'}</button>
+    </span>`;
+    const moreStale=stale?`<button class="b-ghost" style="font-size:12.5px;padding:8px 12px" onclick="shelve(${b.id})">🗄 На стеллаж (позже)</button>`:'';
+    const moreVisit=(b.visits>=2)?`<button class="b-ghost" style="font-size:12.5px;padding:8px 12px" onclick="recognize(${b.id},'stale')">🗑 Уже неактуально</button>
+      <button class="b-ghost" style="font-size:12.5px;padding:8px 12px" onclick="recognize(${b.id},'known')">💡 Я знаю решение</button>`:'';
+    const pinMore=pinned
+      ?`<button class="b-sec" style="font-size:12.5px;padding:8px 12px;color:var(--vio)" title="снять с экрана" onclick="togglePin(0)">📌 висит поверх окон</button>`
+      :`<button class="b-ghost" style="font-size:12.5px;padding:8px 12px" title="показать поверх всех окон в углу экрана" onclick="togglePin(${b.id})">📌 Вывесить</button>`;
+    const visitMeta=(b.visits>=2)?`<div class="meta" style="margin-top:8px">👁 заход №${b.visits} · лежит с ${b.born_at.slice(0,10)}</div>`:'';
     body=head+`
     ${b.ai_note?`<div class="meta" style="margin:4px 0 10px;padding:8px 10px;border:1px solid var(--vio);border-radius:8px;text-align:left;white-space:pre-wrap">🤖 отчёт ИИ: ${esc(b.ai_note)}</div>`:''}
-    <button class="b-ok" onclick="done(${b.id})">✅ Сделал +${reward}</button>
-    ${starBtn}
-    ${pinBtn}
-    <span id="timer-row" style="display:inline-block;margin:6px 0">
-      <span id="timer-elapsed" style="font-size:14px;color:var(--vio);${timerBoxId===b.id?'':'display:none'}">${timerBoxId===b.id&&timerSession?fmtElapsed(Math.floor((Date.now()-new Date(timerSession.started_at+'Z').getTime())/1000)):''}</span>
-      <button class="${timerBoxId===b.id?'b-sec':'b-ghost'}" style="${timerBoxId===b.id?'border-color:var(--vio)':''}" id="timer-btn" onclick="toggleTimer(${b.id})">${timerBoxId===b.id?'⏹ Стоп':'▶ Таймер'}</button>
-    </span>
-    <button class="b-ghost" title="жду человека/события - уйдёт в Ожидание, напомнит само"
-      onclick="toWait(${b.id})">⏳ Жду</button>
-    <button class="b-danger" title="уже неактуально" onclick="toTrash(${b.id})">🗑</button>
-    <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
-      <button class="b-ghost" title="слишком страшно/крупно — спрятать и вынести первый шаг" onclick="scaryHide(${b.id})">😰 Страшно</button>
-      <button class="b-ghost" title="разбить на 2+ отдельных задач без проекта" onclick="openSplit(${b.id})">✂ Разбить</button>
+    <div style="margin-top:6px"><button class="b-ok" style="display:block;width:100%;max-width:280px;margin:0 auto" onclick="done(${b.id})">✅ Сделал +${reward}</button></div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:12px">
+      ${starBtn}
+      <button class="b-ghost" title="жду человека/события - уйдёт в Ожидание, напомнит само" onclick="toWait(${b.id})">⏳ Жду</button>
+      <button class="b-danger" title="уже неактуально" onclick="toTrash(${b.id})">🗑</button>
+    </div>
+    <div style="margin-top:12px">
+      <span id="mArr" style="cursor:pointer;color:var(--dim);font-size:12px" onclick="toggleMore()">▾ ещё</span>
+      <div id="mRow" style="display:none;margin-top:8px">
+        <div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;align-items:center">
+          ${timerBtn}
+          ${pinMore}
+          <button class="b-ghost" style="font-size:12.5px;padding:8px 12px" title="слишком страшно/крупно — спрятать и вынести первый шаг" onclick="scaryHide(${b.id})">😰 Страшно</button>
+          <button class="b-ghost" style="font-size:12.5px;padding:8px 12px" title="разбить на 2+ отдельных задач без проекта" onclick="openSplit(${b.id})">✂ Разбить</button>
+          ${moreStale}${moreVisit}
+        </div>
+      </div>
     </div>
     <div id="scarybox"></div><div id="splitbox"></div>
-    ${ytRow}${hint}${staleRow}${visitRow}`;
+    ${ytRow}${hint}${visitMeta}`;
   }
   $('#stage').innerHTML=`<div class="card in" id="c" ${b.starred?'style="border-color:var(--gold)"':''}>${body}</div>`;
   $('#pager').style.display=items.length>1?'flex':'none';
@@ -169,6 +176,11 @@ function render(){
   else{bl.style.display='none';}
 }
 function pg(d){i=(i+d+items.length)%items.length;render()}
+function toggleMore(){
+  const r=$('#mRow'),open=r.style.display!=='none';
+  r.style.display=open?'none':'block';
+  $('#mArr').textContent=open?'▾ ещё':'▴ скрыть';
+}
 async function recognize(id,verdict){
   await api('/recognize',{id,verdict});
   window.juice&&juice('recognize');
