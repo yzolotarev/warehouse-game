@@ -138,9 +138,11 @@
     <div class="row" onclick="go('/chest_page')">
       <div class="ico">🏆</div><div><div class="name">Сундук — награды</div><div class="flav">потратить ⭐ на приятности</div></div><div class="n"></div>
     </div>
+    <!-- ЗАМОРОЖЕНО 22.07 (запрос юзера): вход «Разбор для робота» скрыт. Разморозка: раскомментировать.
     <div class="row" onclick="go('/robot_page')">
       <div class="ico">🤖</div><div><div class="name">Разбор для робота</div><div class="flav">Робот / Не робот · что ИИ может сделать за тебя</div></div><div class="n" id="n-robot"></div>
     </div>
+    -->
     <div class="row" onclick="go('/route_page')">
       <div class="ico">📡</div><div><div class="name">Разбор по проектам</div><div class="flav">задача про техпроект? → в его инбокс</div></div><div class="n" id="n-route"></div>
     </div>
@@ -257,7 +259,8 @@ async function load(){
   set('n-review',st.review_due?'пора!':'');
   set('n-pallet',(st.dry_pallets||[]).length||'');
   fetch('/mirror').then(r=>r.json()).then(m=>set('ptsD',m.points_total?'+'+m.points_total+' сегодня':'')).catch(()=>{});
-  fetch('/robot_triage').then(r=>r.json()).then(d=>set('n-robot',d.items.length||''));
+  // ЗАМОРОЖЕНО 22.07: счётчик робота не нужен, вход скрыт (см. выше)
+  // fetch('/robot_triage').then(r=>r.json()).then(d=>set('n-robot',d.items.length||''));
   fetch('/focus/state').then(r=>r.json()).then(d=>{
     document.getElementById('focusMode').classList.toggle('active',d.on);
     // живой гейт: кредит и состояние шлагбаума вместо статичной подписи
