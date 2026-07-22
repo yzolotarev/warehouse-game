@@ -1197,34 +1197,16 @@ def _export_mind(box_id: int, text: str) -> str | None:
         return None
 
 
-FOCUS_CAP = 5
+FOCUS_CAP = 5  # видимое ОКНО фокуса, не потолок бассейна (см. _displace_focus)
 
 
 def _displace_focus(conn):
-    """Вытеснение (21.07, пересборка философии): ёмкость фокуса = FOCUS_CAP, БЕЗ часов.
-    Свежая кровь выталкивает самую застоявшуюся незвёздную коробку обратно на стеллаж -
-    кровь не должна стоять. ⭐ = прищепка: звёздную кровоток не уносит.
-    Застоялость v1 = самый ранний въезд в фокус (по moves), не время суток."""
-    displaced = []
-    while True:
-        n = conn.execute("SELECT COUNT(*) c FROM boxes WHERE shelf='focus'").fetchone()["c"]
-        if n <= FOCUS_CAP:
-            break
-        v = conn.execute(
-            "SELECT b.id, MAX(mv.at) entered FROM boxes b "
-            "LEFT JOIN moves mv ON mv.box_id=b.id AND mv.to_shelf='focus' "
-            "WHERE b.shelf='focus' AND b.starred=0 "
-            "GROUP BY b.id ORDER BY entered LIMIT 1").fetchone()
-        if not v:
-            break  # весь фокус звёздный - не трогаем
-        conn.execute("UPDATE boxes SET shelf='rack' WHERE id=?", (v["id"],))
-        conn.execute("INSERT INTO moves(box_id, from_shelf, to_shelf) "
-                     "VALUES(?, 'focus', 'rack')", (v["id"],))
-        # приезд на стеллаж = как обычный: попадёт в отложенную контекстуализацию
-        set_flag(conn, "recontext_dirty", datetime.now().isoformat(timespec="seconds"))
-        log_event(conn, "displace", id=v["id"])
-        displaced.append(v["id"])
-    return displaced
+    """Фокус - БАССЕЙН задач (22.07, разворот философии 21.07): вытеснения на
+    стеллаж больше нет. Видно только окно из FOCUS_CAP (см. /focus, LIMIT там),
+    остальное - бэклог, ждёт своей очереди по id. Сделал верхнюю - в окно само
+    подтягивается следующая по id (окно = срез ORDER BY+LIMIT, добирать нечего).
+    Функция оставлена no-op'ом, чтобы старые вызовы не пришлось выпиливать."""
+    return []
 
 
 @app.post("/move")
@@ -2518,10 +2500,14 @@ def focus_list():
     today = date.today()
     game_today_str = game_today().isoformat()
     with db() as conn:
-        rows = conn.execute(
+        active = conn.execute(
             "SELECT * FROM boxes WHERE shelf='focus'"
             " AND (starred=0 OR starred_at IS NULL OR starred_at<=?)"
             " ORDER BY starred DESC, id", (game_today_str,)).fetchall()
+        # фокус - бассейн задач, но видно только окно FOCUS_CAP; сделал верхнюю -
+        # следующая по id сама войдёт в окно на перечитывании (нет отдельного добора)
+        rows = active[:FOCUS_CAP]
+        backlog = max(0, len(active) - len(rows))
         out = []
         for r in rows:
             d = dict(r)
@@ -2557,7 +2543,8 @@ def focus_list():
         hidden_star_ids = [r["id"] for r in hidden_rows]
         dry = _dry_pallets(conn)
     return {"items": out, "stale_days": STALE_FOCUS_DAYS, "dry_pallets": dry,
-            "hidden_stars": hidden_stars, "hidden_star_ids": hidden_star_ids}
+            "hidden_stars": hidden_stars, "hidden_star_ids": hidden_star_ids,
+            "backlog": backlog}
 
 
 @app.get("/pallets_page")
@@ -2641,13 +2628,6 @@ def _whatnow(conn):
         q.append({"act": "🧰 Общая пересборка · +25 ⭐",
                   "why": "столп №2: без неё система разваливается",
                   "url": "/review"})
-    focus_n = counts.get("focus", 0)
-    if focus_n > FOCUS_TRIM_AT:
-        # прополка ВСЕГДА раньше разметки робота: закрытое/выкинутое не придётся
-        # тегировать, а робот кормится фокусом - пусть тегируется уже честный
-        q.append({"act": f"✂ Проредить фокус ({focus_n} → {FOCUS_TRIM_AT})",
-                  "why": "фокус толще канона: «делаю сейчас» превратился в стеллаж",
-                  "url": "/focus_triage_page"})
     if robot_n:
         q.append({"act": f"🤖 Разметить для робота ({robot_n})",
                   "why": "две кнопки на коробку - и ИИ сможет брать твои задачи",

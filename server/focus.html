@@ -27,13 +27,14 @@
 </style>
 </head>
 <body><div id="wrap">
-  <h1>🎯 Фокус <span style="color:var(--dim);font-weight:normal">= делаю сейчас (≤5)</span></h1>
-  <div id="sub">одна задача на экране - её и делай · ⭐ = главное на завтра, утром покажу её первой</div>
+  <h1>🎯 Фокус <span style="color:var(--dim);font-weight:normal">= делаю сейчас (окно 5)</span></h1>
+  <div id="sub">одна задача на экране - её и делай · сделал одну - следующая сама встанет в окно · ⭐ = главное на завтра, утром покажу её первой</div>
   <div id="star-banner" style="display:none;margin-bottom:10px;padding:10px 14px;border-radius:10px;border:1px solid var(--gold);color:var(--gold);font-size:13px;cursor:pointer" onclick="unstarAll();"></div>
   <div id="stage"></div>
   <div id="pager" style="display:none">
     <button class="b-ghost" onclick="pg(-1)">‹</button><span id="cnt"></span><button class="b-ghost" onclick="pg(1)">›</button>
   </div>
+  <div id="backlogRow" class="meta" style="display:none;text-align:center;margin-top:8px"></div>
   <a href="/">← в прихожую склада</a>
 </div>
 <script>
@@ -45,7 +46,7 @@ function esc(s){const d=document.createElement('div');d.textContent=s;return d.i
 function beep(f,d){try{const a=beep.ac=beep.ac||new AudioContext(),o=a.createOscillator(),g=a.createGain();
   o.type='triangle';o.frequency.value=f;g.gain.value=.05;o.connect(g);g.connect(a.destination);
   o.start();g.gain.exponentialRampToValueAtTime(1e-4,a.currentTime+d);o.stop(a.currentTime+d)}catch(e){}}
-let staleDays=3, dryPallets=[], hiddenStars=0, hiddenStarIds=[], pinnedText='';
+let staleDays=3, dryPallets=[], hiddenStars=0, hiddenStarIds=[], pinnedText='', backlog=0;
 let timerSession=null, timerBoxId=null, timerInterval=null;
 function fmtElapsed(s){
   const h=Math.floor(s/3600), m=Math.floor((s%3600)/60), se=s%60;
@@ -71,6 +72,7 @@ async function load(){
   const d=await api('/focus');
   items=d.items; staleDays=d.stale_days; dryPallets=d.dry_pallets||[];
   hiddenStars=d.hidden_stars||0; hiddenStarIds=d.hidden_star_ids||[];
+  backlog=d.backlog||0;
   i=Math.min(i,Math.max(0,items.length-1)); render();
   await checkTimer();
   try{pinnedText=(await api('/pin')).text||'';render();}catch(e){}
@@ -88,7 +90,7 @@ function render(){
         +'<div class="meta" style="margin-top:8px">сними с проекта следующий конкретный шаг — и он появится тут</div></div>':'';
     $('#stage').innerHTML='<div class="card muted"><img class="empty-ill" src="/assets/empty-focus.png" alt="">Фокус пуст.'
       +(dryPallets.length?' Проекты ждут доения ↓':' Наполни его на разборе инбокса. ✨')+milk+'</div>';
-    $('#pager').style.display='none';return}
+    $('#pager').style.display='none';$('#backlogRow').style.display='none';return}
   const b=items[i];
   const stale=b.idle_days>staleDays;
   const pal=b.pallet_title?` · 🧱 ${esc(b.pallet_title)}`:'';
@@ -157,6 +159,9 @@ function render(){
   $('#stage').innerHTML=`<div class="card in" id="c" ${b.starred?'style="border-color:var(--gold)"':''}>${body}</div>`;
   $('#pager').style.display=items.length>1?'flex':'none';
   $('#cnt').textContent=(i+1)+' / '+items.length;
+  const bl=$('#backlogRow');
+  if(backlog>0){bl.style.display='block';bl.textContent=`+ ещё ${backlog} в очереди фокуса — подтянутся по одной`;}
+  else{bl.style.display='none';}
 }
 function pg(d){i=(i+d+items.length)%items.length;render()}
 async function recognize(id,verdict){
