@@ -112,6 +112,7 @@ function render(){
       <button class="b-ghost" onclick="recognize(${b.id},'known')">💡 Я знаю решение — в фокус</button>
     </div>`:'';
   const isThink=b.scary_kind==='think';
+  const isThinkPallet=b.scary_kind==='think_pallet';
   const isReturned=b.scary_kind==='returned';
   let doneList=[];try{doneList=JSON.parse(b.scary_done||'[]');}catch(e){}
   const starBtn=b.starred
@@ -128,6 +129,10 @@ function render(){
     // авто-шаг спрятанной страшной задачи: сделал → выписываешь надуманные шаги
     body=head+`<div class="meta" style="margin:4px 0 10px">страшная задача спрятана — сделай только это, потом выпишешь шаги</div>
       <div id="scarybox"><button class="b-ok" onclick="openScarySteps(${b.scary_parent})">✅ Подумал — выписать шаги</button></div>`;
+  }else if(isThinkPallet){
+    // авто-шаг застрявшего проекта: сделал → выписываешь шаги прямо в очередь проекта
+    body=head+`<div class="meta" style="margin:4px 0 10px">проект встал — сделай только это, потом выпишешь шаги в его очередь</div>
+      <div id="scarybox"><button class="b-ok" onclick="openPalletScarySteps(${b.scary_pallet_id})">✅ Подумал — выписать шаги</button></div>`;
   }else if(isReturned){
     // вернувшаяся задача: цепочка шагов пройдена, решай судьбу
     const doneRow=doneList.length?`<div class="meta" style="margin:8px 0;padding:8px 10px;border:1px solid var(--vio);border-radius:8px;text-align:left"><i>для неё уже сделано:<br>${doneList.map(s=>'· '+esc(s)).join('<br>')}</i></div>`:'';
@@ -188,6 +193,23 @@ async function scaryStepsSubmit(parentId){
   const ta=document.getElementById('scaryta');
   const lines=(ta?ta.value:'').split('\n').map(s=>s.trim()).filter(Boolean);
   try{await api('/scary_steps',{parent:parentId,lines});}catch(e){return;}
+  window.juice&&juice('ship');beep(620,.12);
+  i=0;await load();
+}
+// think-шаг ПРОЕКТА сделан: строчки заряжают очередь проекта напрямую (доение),
+// без цепочки с возвратом - проекту некуда «возвращаться», он просто не сухой
+function openPalletScarySteps(palletId){
+  const box=document.getElementById('scarybox');
+  if(!box)return;
+  box.innerHTML='<textarea id="scaryta" rows="4" style="width:100%;box-sizing:border-box;padding:10px 12px;font-size:15px" '
+    +'placeholder="что надумал — по строчке на шаг проекта&#10;например: написать первый абзац&#10;найти контакт"></textarea>'
+    +`<button class="b-ok" style="margin-top:8px" onclick="palletScaryStepsSubmit(${palletId})">▶ Так и запишем</button>`;
+  const ta=document.getElementById('scaryta');ta&&ta.focus();
+}
+async function palletScaryStepsSubmit(palletId){
+  const ta=document.getElementById('scaryta');
+  const lines=(ta?ta.value:'').split('\n').map(s=>s.trim()).filter(Boolean);
+  try{await api('/pallet/scary_steps',{pallet_id:palletId,lines});}catch(e){return;}
   window.juice&&juice('ship');beep(620,.12);
   i=0;await load();
 }

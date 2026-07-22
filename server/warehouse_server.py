@@ -432,6 +432,11 @@ def init_db():
             conn.execute("ALTER TABLE boxes ADD COLUMN scary_queue TEXT")
         if "scary_done" not in cols:
             conn.execute("ALTER TABLE boxes ADD COLUMN scary_done TEXT")
+        # project-scary (22.07): think-шаг проекта - scary_kind='think_pallet',
+        # scary_pallet_id = id проекта. Отдельная колонка от scary_parent (тот -
+        # id ЗАДАЧИ в цепочке _scary_advance/_scary_revive) - смешивать нельзя.
+        if "scary_pallet_id" not in cols:
+            conn.execute("ALTER TABLE boxes ADD COLUMN scary_pallet_id INTEGER")
         ccols = {r["name"] for r in conn.execute("PRAGMA table_info(chest)")}
         if "kind" not in ccols:
             # fixed = обычный магазин (как было), pool = награда-кандидат для
@@ -2019,19 +2024,24 @@ class PalletStep(BaseModel):
     text: str
 
 
+def _pallet_add_step(conn, pallet_id, text):
+    # шаг рождается в ОЧЕРЕДИ проекта (полка pallet_step с pallet_id), не в
+    # фокусе: доение наполняет очередь, фокус тянет из неё по одному (stepFocus)
+    cur = conn.execute(
+        "INSERT INTO boxes(raw_text, source, shelf, pallet_id) "
+        "VALUES(?, 'pallet', 'pallet_step', ?)", (text, pallet_id))
+    conn.execute("INSERT INTO moves(box_id, from_shelf, to_shelf) "
+                 "VALUES(?, NULL, 'pallet_step')", (cur.lastrowid,))
+    return cur.lastrowid
+
+
 @app.post("/pallet/step")
 def pallet_step(s: PalletStep):
     with db() as conn:
         _check_blocked(conn)
-        # шаг рождается в ОЧЕРЕДИ проекта (полка pallet_step с pallet_id), не в
-        # фокусе: доение наполняет очередь, фокус тянет из неё по одному (stepFocus)
-        cur = conn.execute(
-            "INSERT INTO boxes(raw_text, source, shelf, pallet_id) "
-            "VALUES(?, 'pallet', 'pallet_step', ?)", (s.text.strip(), s.pallet_id))
-        conn.execute("INSERT INTO moves(box_id, from_shelf, to_shelf) "
-                     "VALUES(?, NULL, 'pallet_step')", (cur.lastrowid,))
-        log_event(conn, "pallet_step", pid=s.pallet_id, step_id=cur.lastrowid)
-    return {"step_id": cur.lastrowid}
+        step_id = _pallet_add_step(conn, s.pallet_id, s.text.strip())
+        log_event(conn, "pallet_step", pid=s.pallet_id, step_id=step_id)
+    return {"step_id": step_id}
 
 
 def _pallet_last_move(conn, p):
@@ -2178,6 +2188,114 @@ def pallet_delete(d: PalletDelete):
         conn.execute("DELETE FROM pallets WHERE id=?", (d.id,))
         log_event(conn, "pallet_delete", pid=d.id, trashed_steps=len(live))
     return {"ok": True, "trashed_steps": len(live)}
+
+
+class PalletSuggestStep(BaseModel):
+    id: int
+
+
+PALLET_SUGGEST_SYS = (
+    "Тебе дан застрявший личный проект: название, критерий готовности, зачем он "
+    "вообще нужен, правила ведения, что уже сделано, что сейчас в очереди. "
+    "Предложи ОДИН конкретный маленький следующий шаг - можно сделать за один "
+    "присест, без общих фраз и вступлений. Ответь СТРОГО одним предложением."
+)
+
+
+@app.post("/pallet/suggest_step")
+def pallet_suggest_step(m: PalletSuggestStep):
+    """Черновик следующего шага через web2api (llm-brains): подставляется в поле,
+    решение и правка остаются за человеком - ничего не создаёт и не двигает само."""
+    with db() as conn:
+        p = conn.execute("SELECT * FROM pallets WHERE id=?", (m.id,)).fetchone()
+        if not p:
+            raise HTTPException(404, "no such pallet")
+        steps = conn.execute(
+            "SELECT raw_text, shelf FROM boxes WHERE pallet_id=? ORDER BY id",
+            (m.id,)).fetchall()
+    done = [s["raw_text"] for s in steps if s["shelf"] in ("done", "archived")][-5:]
+    pending = [s["raw_text"] for s in steps
+              if s["shelf"] not in ("done", "archived", "trash")]
+    prompt = (
+        f"Проект: {p['title']}\n"
+        f"Готово, когда: {p['done_criteria'] or '—'}\n"
+        f"Зачем: {p['purpose'] or '—'}\n"
+        f"Правила: {p['principles'] or '—'}\n"
+        f"Уже сделано: {'; '.join(done) or '—'}\n"
+        f"Сейчас в очереди/фокусе: {'; '.join(pending) or '—'}"
+    )
+    try:
+        r = subprocess.run(
+            ["llm-brains", "--backend", "web2api", "--max-tokens", "80",
+             "--system", PALLET_SUGGEST_SYS, prompt],
+            capture_output=True, text=True, timeout=90)
+    except subprocess.TimeoutExpired:
+        raise HTTPException(504, "ии долго думает - попробуй ещё раз")
+    if r.returncode != 0:
+        raise HTTPException(502, "ии недоступен")
+    suggestion = " ".join(r.stdout.split()).strip()
+    if not suggestion:
+        raise HTTPException(502, "пустой ответ ии")
+    with db() as conn:
+        log_event(conn, "pallet_suggest_step", pid=m.id)
+    return {"suggestion": suggestion}
+
+
+class PalletScary(BaseModel):
+    id: int
+
+
+@app.post("/pallet/scary")
+def pallet_scary(m: PalletScary):
+    """«Трудно понять, что дальше»: снижаем планку как у страшной задачи - не
+    просить шаг сразу, а дать сначала «две минуты подумать» в фокусе. Проект
+    сам себе ничего не меняет - думать пользователь идёт в фокус."""
+    with db() as conn:
+        p = conn.execute("SELECT title FROM pallets WHERE id=?", (m.id,)).fetchone()
+        if not p:
+            raise HTTPException(404, "no such pallet")
+        text = f"Две минуты подумать над проектом «{_scary_title(p['title'])}»: что тут можно сдвинуть"
+        cur = conn.execute(
+            "INSERT INTO boxes(raw_text, source, shelf, scary_kind, scary_pallet_id) "
+            "VALUES(?, 'scary_pallet', 'focus', 'think_pallet', ?)", (text, m.id))
+        sid = cur.lastrowid
+        conn.execute("INSERT INTO moves(box_id, from_shelf, to_shelf) VALUES(?, NULL, 'focus')",
+                     (sid,))
+        _displace_focus(conn)
+        log_event(conn, "pallet_scary", pid=m.id)
+    return {"ok": True}
+
+
+class PalletScarySteps(BaseModel):
+    pallet_id: int
+    lines: list
+
+
+@app.post("/pallet/scary_steps")
+def pallet_scary_steps(m: PalletScarySteps):
+    """Сделан think-шаг проекта: выписанные строчки заряжают очередь напрямую
+    (доение), без цепочки с возвратом - проект не прячется, ему некуда «возвращаться»,
+    он просто перестаёт быть сухим и пересборка сама умолкает про него."""
+    lines = [str(s).strip() for s in m.lines if str(s).strip()]
+    with db() as conn:
+        p = conn.execute("SELECT id FROM pallets WHERE id=?", (m.pallet_id,)).fetchone()
+        if not p:
+            raise HTTPException(404, "no such pallet")
+        think = conn.execute(
+            "SELECT id FROM boxes WHERE scary_pallet_id=? AND scary_kind='think_pallet'"
+            " AND shelf='focus' ORDER BY id DESC LIMIT 1", (m.pallet_id,)).fetchone()
+        if think:
+            conn.execute("UPDATE boxes SET shelf='done' WHERE id=?", (think["id"],))
+            conn.execute("INSERT INTO moves(box_id, from_shelf, to_shelf) "
+                         "VALUES(?, 'focus', 'done')", (think["id"],))
+            reason = f"страшно проект: старт #{m.pallet_id}"
+            if not conn.execute("SELECT 1 FROM points WHERE reason=?", (reason,)).fetchone():
+                award(conn, MICRO_POINTS, reason)
+        for text in lines:
+            _pallet_add_step(conn, m.pallet_id, text)
+        streak_touch(conn)
+        log_event(conn, "pallet_scary_steps", pid=m.pallet_id, n=len(lines))
+    return {"ok": True, "steps": len(lines)}
 
 
 class Star(BaseModel):
@@ -3188,8 +3306,13 @@ def review_data():
             f"GROUP BY box_id HAVING date(m) >= date({SQL_TODAY}, '-{REVIEW_DAYS} days')")}
         racks = [r for r in all_racks
                  if str(r["id"]) not in decided_ids and str(r["id"]) not in fresh_ids]
+        # пересборка спрашивает только про СУХИЕ проекты (пустая очередь и фокус) -
+        # у здоровых уже есть заряженный шаг, переспрашивать «дай шаг или заморозь»
+        # незачем (тот же принцип, что и с fresh_ids выше для стеллажа)
+        dry_ids = {d["id"] for d in _dry_pallets(conn)}
         pallets = [dict(r) for r in conn.execute(
-            "SELECT * FROM pallets WHERE frozen=0 ORDER BY created_at")]
+            "SELECT * FROM pallets WHERE frozen=0 ORDER BY created_at")
+            if r["id"] in dry_ids]
         for p in pallets:
             p["steps"] = [dict(r) for r in conn.execute(
                 "SELECT * FROM boxes WHERE pallet_id=? ORDER BY id", (p["id"],))]

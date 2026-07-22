@@ -506,6 +506,15 @@
     ["По каким правилам", "Under what rules"],
     ["я бы дал кому угодно полную свободу это делать, при условии что...", "I'd give anyone full freedom to do this, provided that…"],
     ["Удалить проект? Несделанные шаги уедут в мусор.", "Delete the project? Undone steps go to trash."],
+    ["🗑 Удалить проект", "🗑 Delete project"],
+    ["🧠 Предложи шаг", "🧠 Suggest a step"],
+    ["🧠 думает…", "🧠 thinking…"],
+    ["⚠ ии не ответил, впиши сам", "⚠ ai didn't answer, write it yourself"],
+    ["😰 Трудно понять, что дальше", "😰 Hard to see what's next"],
+    ["проект встал — сделай только это, потом выпишешь шаги в его очередь",
+     "the project stalled — just do this, then you'll write steps into its queue"],
+    ["что надумал — по строчке на шаг проекта\nнапример: написать первый абзац\nнайти контакт",
+     "what came to mind — one line per project step\ne.g. write the first paragraph\nfind the contact"],
 
     // ── стеллажи ──
     ["🗄 Стеллажи", "🗄 Racks"],

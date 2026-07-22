@@ -146,7 +146,12 @@ function palletStep(){
     <div>
       <button class="b-sec" onclick="palletAdd(${p.id})">→ 🎯 шаг в фокус</button>
       <button onclick="palletOk()">Шаг уже есть ›</button>
+      <button class="b-ghost" onclick="palletSuggest(${p.id}, this)">🧠 Предложи шаг</button>
+    </div>
+    <div style="margin-top:8px">
+      <button class="b-ghost" onclick="palletScary(${p.id})">😰 Трудно понять, что дальше</button>
       <button class="b-ghost" onclick="palletFreeze(${p.id})">🧊 Заморозить</button>
+      <button class="b-danger" onclick="delPalletRev(${p.id})">🗑 Удалить проект</button>
     </div>
   </div>`;
   $('#ns').focus();
@@ -164,6 +169,26 @@ function palletOk(){
 async function palletFreeze(pid){
   await api('/pallet/freeze',{id:pid,frozen:true});
   beep(240,.15); pallets.shift();
+  $('#c').classList.add('fly'); setTimeout(palletStep,260);
+}
+async function delPalletRev(pid){
+  if(!confirm((window.WH_T||String)('Удалить проект? Несделанные шаги уедут в мусор.')))return;
+  await api('/pallet/delete',{id:pid});
+  beep(180,.15); pallets.shift();
+  $('#c').classList.add('fly'); setTimeout(palletStep,260);
+}
+async function palletSuggest(pid, btn){
+  const was=btn.textContent; btn.disabled=true; btn.textContent='🧠 думает…';
+  try{
+    const r=await api('/pallet/suggest_step',{id:pid});
+    if(r&&r.suggestion){$('#ns').value=r.suggestion; $('#ns').focus();}
+    else{$('#ns').placeholder='⚠ ии не ответил, впиши сам';}
+  }catch(e){$('#ns').placeholder='⚠ ии не ответил, впиши сам';}
+  btn.disabled=false; btn.textContent=was;
+}
+async function palletScary(pid){
+  await api('/pallet/scary',{id:pid});
+  beep(560,.12); pallets.shift();
   $('#c').classList.add('fly'); setTimeout(palletStep,260);
 }
 /* этап 2.5: фокус переполнен — разгружаем */
