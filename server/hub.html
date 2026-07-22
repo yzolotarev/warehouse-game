@@ -143,9 +143,11 @@
       <div class="ico">🤖</div><div><div class="name">Разбор для робота</div><div class="flav">Робот / Не робот · что ИИ может сделать за тебя</div></div><div class="n" id="n-robot"></div>
     </div>
     -->
+    <!-- ЗАМОРОЖЕНО 22.07 (запрос юзера): вход «Разбор по проектам» скрыт. Разморозка: раскомментировать.
     <div class="row" onclick="go('/route_page')">
       <div class="ico">📡</div><div><div class="name">Разбор по проектам</div><div class="flav">задача про техпроект? → в его инбокс</div></div><div class="n" id="n-route"></div>
     </div>
+    -->
     <div class="row" onclick="go('/focus_triage_page')">
       <div class="ico">✂</div><div><div class="name">Разбор фокуса</div><div class="flav">канон ≤5 · остальное вернуть, где было</div></div><div class="n" id="n-trim"></div>
     </div>
@@ -270,7 +272,8 @@ async function load(){
     document.getElementById('focusFlav').textContent=
       d.on?'идёт · '+Math.floor(d.elapsed/60)+'м':`кредит ${bal}м · ${lbl}`;
   }).catch(()=>{});
-  fetch('/route_triage').then(r=>r.json()).then(d=>set('n-route',d.items.length||''));
+  // ЗАМОРОЖЕНО 22.07: счётчик разбора по проектам не нужен, вход скрыт (см. выше)
+  // fetch('/route_triage').then(r=>r.json()).then(d=>set('n-route',d.items.length||''));
   document.getElementById('blocked').style.display=st.blocked?'block':'none';
   const vac=document.getElementById('vac');
   if(st.on_vacation){vac.style.display='block';set('vacD',st.vacation_until);}
