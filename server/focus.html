@@ -109,11 +109,9 @@ function render(){
       <button class="b-ghost" onclick="recognize(${b.id},'stale')">🗑 Уже неактуально</button>
       <button class="b-ghost" onclick="recognize(${b.id},'known')">💡 Я знаю решение — в фокус</button>
     </div>`:'';
-  // 😰 две минуты: у страшной задачи главная кнопка - не «сделал», а «начал»
-  const microRow=(b.scary&&b.micro)?`<div id="micro" style="margin-top:12px;padding:10px 12px;border:1px solid var(--vio);border-radius:9px">
-      <button class="b-primary" style="width:100%;white-space:normal" onclick="microStart(${b.id})">▶ 2 минуты: ${esc(b.micro)}</button>
-      <div class="meta" style="margin-top:8px">две минуты уже победа — остальное бонус</div>
-    </div>`:'';
+  const isThink=b.scary_kind==='think';
+  const isReturned=b.scary_kind==='returned';
+  let doneList=[];try{doneList=JSON.parse(b.scary_done||'[]');}catch(e){}
   const starBtn=b.starred
     ?`<button class="b-sec" style="color:var(--gold)" title="снять звезду" onclick="setStar(${b.id},false)">⭐ на завтра</button>`
     :`<button class="b-ghost" title="звезда = главное на завтра (утром решений ноль)" onclick="setStar(${b.id},true)">☆ на завтра</button>`;
@@ -121,9 +119,23 @@ function render(){
   const pinBtn=pinned
     ?`<button class="b-sec" style="color:var(--vio)" title="снять с экрана" onclick="togglePin(0)">📌 висит поверх окон</button>`
     :`<button class="b-ghost" title="показать поверх всех окон в углу экрана, чтобы не отвлекаться" onclick="togglePin(${b.id})">📌 Вывесить</button>`;
-  $('#stage').innerHTML=`<div class="card in" id="c" ${b.starred?'style="border-color:var(--gold)"':''}>
-    <div class="meta">${b.starred?'⭐ ':''}#${b.id} · родилась ${b.born_at.slice(0,10)}${pal}${dust}${b.elapsed_seconds_total?` · ⏱ ${fmtElapsed(b.elapsed_seconds_total)}`:''}</div>
-    <div class="task">${esc(b.raw_text)}</div>
+  const head=`<div class="meta">${b.starred?'⭐ ':''}#${b.id} · родилась ${b.born_at.slice(0,10)}${pal}${dust}${b.elapsed_seconds_total?` · ⏱ ${fmtElapsed(b.elapsed_seconds_total)}`:''}</div>
+    <div class="task">${esc(b.raw_text)}</div>`;
+  let body;
+  if(isThink){
+    // авто-шаг спрятанной страшной задачи: сделал → выписываешь надуманные шаги
+    body=head+`<div class="meta" style="margin:4px 0 10px">страшная задача спрятана — сделай только это, потом выпишешь шаги</div>
+      <div id="scarybox"><button class="b-ok" onclick="openScarySteps(${b.scary_parent})">✅ Подумал — выписать шаги</button></div>`;
+  }else if(isReturned){
+    // вернувшаяся задача: цепочка шагов пройдена, решай судьбу
+    const doneRow=doneList.length?`<div class="meta" style="margin:8px 0;padding:8px 10px;border:1px solid var(--vio);border-radius:8px;text-align:left"><i>для неё уже сделано:<br>${doneList.map(s=>'· '+esc(s)).join('<br>')}</i></div>`:'';
+    body=head+doneRow+`<div style="margin-top:8px">
+      <button class="b-ok" onclick="done(${b.id})">✅ Сделал +${reward}</button>
+      <button class="b-sec" onclick="scaryMore(${b.id})">➕ ещё шаг</button>
+      <button class="b-danger" title="удалить" onclick="toTrash(${b.id})">🗑</button>
+    </div>`;
+  }else{
+    body=head+`
     ${b.ai_note?`<div class="meta" style="margin:4px 0 10px;padding:8px 10px;border:1px solid var(--vio);border-radius:8px;text-align:left;white-space:pre-wrap">🤖 отчёт ИИ: ${esc(b.ai_note)}</div>`:''}
     <button class="b-ok" onclick="done(${b.id})">✅ Сделал +${reward}</button>
     ${starBtn}
@@ -135,8 +147,14 @@ function render(){
     <button class="b-ghost" title="жду человека/события - уйдёт в Ожидание, напомнит само"
       onclick="toWait(${b.id})">⏳ Жду</button>
     <button class="b-danger" title="уже неактуально" onclick="toTrash(${b.id})">🗑</button>
-    ${microRow}${ytRow}${hint}${staleRow}${visitRow}
-  </div>`;
+    <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
+      <button class="b-ghost" title="слишком страшно/крупно — спрятать и вынести первый шаг" onclick="scaryHide(${b.id})">😰 Страшно</button>
+      <button class="b-ghost" title="разбить на 2+ отдельных задач без проекта" onclick="openSplit(${b.id})">✂ Разбить</button>
+    </div>
+    <div id="scarybox"></div><div id="splitbox"></div>
+    ${ytRow}${hint}${staleRow}${visitRow}`;
+  }
+  $('#stage').innerHTML=`<div class="card in" id="c" ${b.starred?'style="border-color:var(--gold)"':''}>${body}</div>`;
   $('#pager').style.display=items.length>1?'flex':'none';
   $('#cnt').textContent=(i+1)+' / '+items.length;
 }
@@ -146,40 +164,51 @@ async function recognize(id,verdict){
   window.juice&&juice('recognize');
   i=0;await load();
 }
-// Отсчёт двух минут. На нуле обе кнопки РАВНОВЕСНЫ и дают одно и то же очко:
-// платим за старт, и страху не за что зацепиться.
-let microTimer=null;
-async function microStart(id){
-  await api('/micro_start',{id});
-  const box=document.getElementById('micro');
-  if(!box)return;
-  window.WH_LOADBAR_OWNED=true;
-  let left=120;
-  box.innerHTML='<div style="font-size:28px;font-weight:600" id="mclock">2:00</div>'
-    +'<div class="meta" style="margin-top:6px">делай. остановиться можно на нуле</div>';
-  if(microTimer)clearInterval(microTimer);
-  microTimer=setInterval(()=>{
-    left--;
-    window.WH_setLoadBar&&WH_setLoadBar(Math.round(100*(120-left)/120),'2 минуты');
-    const cl=document.getElementById('mclock');
-    if(cl)cl.textContent=Math.floor(left/60)+':'+String(left%60).padStart(2,'0');
-    if(left<=0){
-      clearInterval(microTimer);microTimer=null;
-      window.juice&&juice('done');beep(660,.12);
-      if(box)box.innerHTML='<div class="meta" style="margin-bottom:8px">две минуты позади — это уже победа</div>'
-        +`<button class="b-ok" onclick="microDone(${id},false)">✅ Хватит на сегодня</button> `
-        +`<button class="b-ok" onclick="microDone(${id},true)">▶ Продолжаю</button>`;
-    }
-  },1000);
+// 😰 Страшно: задача прячется целиком, наружу выходит цепочка мелких шагов.
+async function scaryHide(id){
+  try{await api('/scary',{id});}catch(e){$('#hint')&&($('#hint').textContent='⚠ '+e.message);return;}
+  window.juice&&juice('ship');beep(560,.12);
+  i=0;await load();
 }
-async function microDone(id,continued){
-  const r=await api('/micro_done',{id,continued});
-  window.WH_LOADBAR_OWNED=false;
-  const btn=document.querySelector('#micro button');
-  if(r.points&&window.juiceXP)juiceXP(r.points,btn);
-  if(!continued)await load();
-  else{const box=document.getElementById('micro');
-       if(box)box.innerHTML='<div class="meta">идёшь дальше — закроешь кнопкой «✅ Сделал»</div>';}
+// think-шаг сделан: показать поле «выпиши, что надумал» (строка = шаг)
+function openScarySteps(parentId){
+  const box=document.getElementById('scarybox');
+  if(!box)return;
+  box.innerHTML='<textarea id="scaryta" rows="4" style="width:100%;box-sizing:border-box;padding:10px 12px;font-size:15px" '
+    +'placeholder="что надумал — по строчке на шаг&#10;например: открыть телеграм и найти чат&#10;написать одну строку"></textarea>'
+    +`<button class="b-ok" style="margin-top:8px" onclick="scaryStepsSubmit(${parentId})">▶ Так и запишем</button>`;
+  const ta=document.getElementById('scaryta');ta&&ta.focus();
+}
+async function scaryStepsSubmit(parentId){
+  const ta=document.getElementById('scaryta');
+  const lines=(ta?ta.value:'').split('\n').map(s=>s.trim()).filter(Boolean);
+  try{await api('/scary_steps',{parent:parentId,lines});}catch(e){return;}
+  window.juice&&juice('ship');beep(620,.12);
+  i=0;await load();
+}
+// вернувшаяся задача: ещё один шаг
+async function scaryMore(id){
+  const t=prompt('Ещё один шаг для этой задачи:');
+  if(!t||!t.trim())return;
+  try{await api('/scary_more',{id,text:t.trim()});}catch(e){return;}
+  window.juice&&juice('ship');i=0;await load();
+}
+// ✂ Разбить на 2+ задачи (части остаются в фокусе)
+function openSplit(id){
+  const box=document.getElementById('splitbox');
+  if(!box)return;
+  box.innerHTML='<textarea id="splitta" rows="4" style="width:100%;box-sizing:border-box;padding:10px 12px;font-size:15px" '
+    +'placeholder="одна строка = одна задача (минимум две)"></textarea>'
+    +`<button class="b-ok" style="margin-top:8px" onclick="splitSubmit(${id})">✂ Разбить</button>`;
+  const ta=document.getElementById('splitta');ta&&ta.focus();
+}
+async function splitSubmit(id){
+  const ta=document.getElementById('splitta');
+  const parts=(ta?ta.value:'').split('\n').map(s=>s.trim()).filter(Boolean);
+  if(parts.length<2){ta&&ta.focus();return;}
+  try{await api('/split',{id,parts});}catch(e){$('#hint')&&($('#hint').textContent='⚠ '+e.message);return;}
+  window.juice&&juice('ship');beep(600,.12);
+  i=0;await load();
 }
 async function toggleTimer(id){
   if(timerBoxId===id){

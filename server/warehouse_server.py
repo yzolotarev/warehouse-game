@@ -43,7 +43,7 @@ OBSIDIAN_MIND = Path(os.environ.get(
     "WAREHOUSE_OBSIDIAN_MIND", Path.home() / "Obsidian/9ListsHybrid/2nd brain"))
 
 SHELVES = {"inbox", "focus", "rack", "pallet_step", "waiting", "done", "trash", "mind",
-           "archived", "robot"}
+           "archived", "robot", "scary_hold"}
 TRIAGE_POINTS = 1     # за разобранную коробку
 RITUAL_POINTS = 10    # за инбокс, разобранный до нуля
 DONE_POINTS = 3       # за сделанную задачу
@@ -420,6 +420,18 @@ def init_db():
             conn.execute("ALTER TABLE boxes ADD COLUMN micro TEXT")
         if "scary" not in cols:
             conn.execute("ALTER TABLE boxes ADD COLUMN scary INTEGER NOT NULL DEFAULT 0")
+        # «Страшно» v2 (22.07): задача прячется целиком на полку scary_hold, наружу
+        # выходит цепочка мелких шагов. scary_parent - у шага ссылка на спрятанную
+        # задачу; scary_kind - think|step|returned; scary_queue/scary_done (JSON) -
+        # на родителе очередь ещё не выданных и список сделанных шагов.
+        if "scary_parent" not in cols:
+            conn.execute("ALTER TABLE boxes ADD COLUMN scary_parent INTEGER")
+        if "scary_kind" not in cols:
+            conn.execute("ALTER TABLE boxes ADD COLUMN scary_kind TEXT")
+        if "scary_queue" not in cols:
+            conn.execute("ALTER TABLE boxes ADD COLUMN scary_queue TEXT")
+        if "scary_done" not in cols:
+            conn.execute("ALTER TABLE boxes ADD COLUMN scary_done TEXT")
         ccols = {r["name"] for r in conn.execute("PRAGMA table_info(chest)")}
         if "kind" not in ccols:
             # fixed = обычный магазин (как было), pool = награда-кандидат для
@@ -1220,7 +1232,7 @@ def move_box(m: Move):
     if m.to not in SHELVES:
         raise HTTPException(400, f"unknown shelf: {m.to}")
     with db() as conn:
-        row = conn.execute("SELECT shelf, pallet_id, street, raw_text FROM boxes WHERE id=?", (m.id,)).fetchone()
+        row = conn.execute("SELECT shelf, pallet_id, street, raw_text, scary_parent, scary_kind FROM boxes WHERE id=?", (m.id,)).fetchone()
         if not row:
             raise HTTPException(404, "no such box")
         # Физический стопор: пока инбокс не разобран, двигаются только коробки
@@ -1308,6 +1320,9 @@ def move_box(m: Move):
                 if prev:
                     pts += SERIES_POINTS
                     award(conn, SERIES_POINTS, f"серия паллеты #{row['pallet_id']}")
+            # закрыт шаг цепочки «страшно» - продвинуть очередь или вернуть родителя
+            if row["scary_parent"] and row["scary_kind"] == "step":
+                _scary_advance(conn, row)
         if m.to == "mind" and row["shelf"] != "mind":
             note = _export_mind(m.id, row["raw_text"])
             if note:
@@ -1398,64 +1413,196 @@ def recognize(r: Recognize):
     return {"ok": True, "to": to}
 
 
-# ─── 😰 Две минуты (коробка #311) ─────────────────────────────────────────────
-# Fogg B=MAP: когда мотивация низкая, единственный рычаг - способность. Все
-# прочие призывы склада сформулированы в объёме пачки («Разобрать входящие (17)»)
-# - для страшной задачи это ровно наоборот.
+# ─── 😰 Страшно v2: спрятать задачу целиком, вывести цепочку мелких шагов ──────
+# Старая механика «две минуты» (micro) заменена. Fogg B=MAP: когда мотивация
+# низкая, единственный рычаг - способность. Страшную задачу целиком не начинают
+# никогда, поэтому она уезжает на полку scary_hold и исчезает отовсюду; наружу
+# выходит авто-шаг «две минуты подумать», из него человек выписывает шаги, они
+# идут ПО ОДНОМУ, и лишь когда цепочка кончилась - задача возвращается ровно
+# туда, откуда её спрятали (эталон возврата - ящик робота, robot_unmark).
 
-class MicroSet(BaseModel):
+SCARY_THINK_TMPL = "Две минуты подумать над: «{}»"
+
+
+def _scary_title(text):
+    t = (text or "").strip().replace("\n", " ")
+    return t[:60] + "…" if len(t) > 60 else t
+
+
+def _scary_emit_step(conn, parent_id, text, kind="step"):
+    """Создать коробку-шаг в фокусе, привязанную к спрятанному родителю."""
+    cur = conn.execute(
+        "INSERT INTO boxes(raw_text, source, shelf, scary_parent, scary_kind) "
+        "VALUES(?, 'scary', 'focus', ?, ?)", (text, parent_id, kind))
+    sid = cur.lastrowid
+    conn.execute("INSERT INTO moves(box_id, from_shelf, to_shelf) VALUES(?, NULL, 'focus')",
+                 (sid,))
+    _displace_focus(conn)
+    return sid
+
+
+def _scary_revive(conn, parent_id):
+    """Цепочка кончилась - вернуть спрятанную задачу туда, откуда приехала, в
+    режиме returned (карточка покажет пометку «сделано» и три кнопки)."""
+    back = conn.execute(
+        "SELECT from_shelf FROM moves WHERE box_id=? AND to_shelf='scary_hold'"
+        " AND from_shelf IS NOT NULL ORDER BY id DESC LIMIT 1", (parent_id,)).fetchone()
+    to = back["from_shelf"] if back else "focus"
+    conn.execute(
+        "UPDATE boxes SET shelf=?, scary_kind='returned', scary_queue=NULL WHERE id=?",
+        (to, parent_id))
+    conn.execute("INSERT INTO moves(box_id, from_shelf, to_shelf) VALUES(?, 'scary_hold', ?)",
+                 (parent_id, to))
+    if to == "focus":
+        _displace_focus(conn)
+    log_event(conn, "scary_revive", id=parent_id, to=to)
+
+
+def _scary_advance(conn, box):
+    """Закрыт scary-шаг: дописать его в scary_done родителя и выдать следующий из
+    очереди, либо вернуть родителя, если очередь пуста. Зовётся из ветки done."""
+    parent_id = box["scary_parent"]
+    prow = conn.execute("SELECT scary_queue, scary_done FROM boxes WHERE id=?",
+                        (parent_id,)).fetchone()
+    if not prow:
+        return
+    done = json.loads(prow["scary_done"] or "[]")
+    done.append(box["raw_text"])
+    conn.execute("UPDATE boxes SET scary_done=? WHERE id=?",
+                 (json.dumps(done, ensure_ascii=False), parent_id))
+    queue = json.loads(prow["scary_queue"] or "[]")
+    if queue:
+        nxt = queue.pop(0)
+        conn.execute("UPDATE boxes SET scary_queue=? WHERE id=?",
+                     (json.dumps(queue, ensure_ascii=False), parent_id))
+        _scary_emit_step(conn, parent_id, nxt, "step")
+    else:
+        _scary_revive(conn, parent_id)
+
+
+class ScaryHide(BaseModel):
+    id: int
+
+
+@app.post("/scary")
+def scary_hide(m: ScaryHide):
+    """«Страшно» откуда угодно: задача исчезает на полку scary_hold, наружу
+    выходит авто-шаг «две минуты подумать»."""
+    with db() as conn:
+        row = conn.execute("SELECT shelf, raw_text FROM boxes WHERE id=?", (m.id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "нет такой коробки")
+        if row["shelf"] == "scary_hold":
+            raise HTTPException(400, "уже спрятана")
+        conn.execute(
+            "UPDATE boxes SET shelf='scary_hold', scary=1, starred=0, starred_at=NULL,"
+            " scary_queue=NULL, scary_done=NULL, scary_kind=NULL WHERE id=?", (m.id,))
+        conn.execute(
+            "INSERT INTO moves(box_id, from_shelf, to_shelf) VALUES(?, ?, 'scary_hold')",
+            (m.id, row["shelf"]))
+        _scary_emit_step(conn, m.id, SCARY_THINK_TMPL.format(_scary_title(row["raw_text"])),
+                         "think")
+        streak_touch(conn)
+        log_event(conn, "scary_hide", id=m.id, frm=row["shelf"])
+    return {"ok": True}
+
+
+class ScarySteps(BaseModel):
+    parent: int
+    lines: list
+
+
+@app.post("/scary_steps")
+def scary_steps(m: ScarySteps):
+    """Сделан think-шаг: человек выписал шаги (по строчке). Первый уходит в фокус,
+    остальные - в очередь родителя. Пусто - сразу возврат родителя."""
+    lines = [str(s).strip() for s in m.lines if str(s).strip()]
+    with db() as conn:
+        prow = conn.execute("SELECT shelf FROM boxes WHERE id=?", (m.parent,)).fetchone()
+        if not prow:
+            raise HTTPException(404, "нет родителя")
+        # закрыть think-коробку (очко за старт, как раньше за две минуты)
+        think = conn.execute(
+            "SELECT id FROM boxes WHERE scary_parent=? AND scary_kind='think'"
+            " AND shelf='focus' ORDER BY id DESC LIMIT 1", (m.parent,)).fetchone()
+        if think:
+            conn.execute("UPDATE boxes SET shelf='done' WHERE id=?", (think["id"],))
+            conn.execute("INSERT INTO moves(box_id, from_shelf, to_shelf) "
+                         "VALUES(?, 'focus', 'done')", (think["id"],))
+            reason = f"страшно: старт #{m.parent}"
+            if not conn.execute("SELECT 1 FROM points WHERE reason=?", (reason,)).fetchone():
+                award(conn, MICRO_POINTS, reason)
+        if not lines:
+            _scary_revive(conn, m.parent)
+        else:
+            first, rest = lines[0], lines[1:]
+            conn.execute("UPDATE boxes SET scary_queue=?, scary_done='[]' WHERE id=?",
+                         (json.dumps(rest, ensure_ascii=False), m.parent))
+            _scary_emit_step(conn, m.parent, first, "step")
+        streak_touch(conn)
+        log_event(conn, "scary_steps", id=m.parent, n=len(lines))
+    return {"ok": True, "steps": len(lines)}
+
+
+class ScaryMore(BaseModel):
     id: int
     text: str
 
 
-class MicroDone(BaseModel):
-    id: int
-    continued: bool = False
-
-
-@app.post("/micro_set")
-def micro_set(m: MicroSet):
+@app.post("/scary_more")
+def scary_more(m: ScaryMore):
+    """На вернувшейся задаче «ещё шаг»: снова спрятать родителя и выдать шаг."""
     text = m.text.strip()
     if not text:
-        raise HTTPException(400, "empty micro step")
+        raise HTTPException(400, "пустой шаг")
     with db() as conn:
         row = conn.execute("SELECT shelf FROM boxes WHERE id=?", (m.id,)).fetchone()
         if not row:
-            raise HTTPException(404, "no box")
-        conn.execute("UPDATE boxes SET micro=?, scary=1, shelf='focus' WHERE id=?",
-                     (text, m.id))
-        if row["shelf"] != "focus":
-            conn.execute("INSERT INTO moves(box_id, from_shelf, to_shelf) VALUES(?,?,'focus')",
-                         (m.id, row["shelf"]))
-            streak_touch(conn)
-            _displace_focus(conn)
-        log_event(conn, "micro_set", id=m.id, micro=text)
+            raise HTTPException(404, "нет такой коробки")
+        conn.execute("UPDATE boxes SET shelf='scary_hold', scary_kind=NULL WHERE id=?", (m.id,))
+        conn.execute(
+            "INSERT INTO moves(box_id, from_shelf, to_shelf) VALUES(?, ?, 'scary_hold')",
+            (m.id, row["shelf"]))
+        _scary_emit_step(conn, m.id, text, "step")
+        streak_touch(conn)
+        log_event(conn, "scary_more", id=m.id)
     return {"ok": True}
 
 
-@app.post("/micro_start")
-def micro_start(body: dict):
-    box_id = int(body.get("id", 0))
-    with db() as conn:
-        log_event(conn, "micro_start", id=box_id)
-    return {"ok": True, "seconds": 120}
+class Split(BaseModel):
+    id: int
+    parts: list
 
 
-@app.post("/micro_done")
-def micro_done(m: MicroDone):
-    """Очко даётся за СТАРТ и одинаково независимо от того, продолжил человек
-    или бросил. Эта симметрия и есть вся механика: если платят за начало, страху
-    не за что зацепиться. Идемпотентно - фарм перезагрузкой не работает."""
-    reason = f"две минуты #{m.id}"
+@app.post("/split")
+def split_box(m: Split):
+    """«Разбить на 2+»: одна коробка → несколько независимых, БЕЗ проекта. Части
+    остаются в той же зоне (shelf/context/pallet_id), исходная уходит в архив."""
+    parts = [str(p).strip() for p in m.parts if str(p).strip()]
+    if len(parts) < 2:
+        raise HTTPException(400, "нужно минимум две части")
     with db() as conn:
-        already = conn.execute("SELECT 1 FROM points WHERE reason=?", (reason,)).fetchone()
-        pts = 0
-        if not already:
-            award(conn, MICRO_POINTS, reason)
-            pts = MICRO_POINTS
+        row = conn.execute(
+            "SELECT shelf, context, pallet_id FROM boxes WHERE id=?", (m.id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "нет такой коробки")
+        new_ids = []
+        for p in parts:
+            cur = conn.execute(
+                "INSERT INTO boxes(raw_text, source, shelf, context, pallet_id) "
+                "VALUES(?, 'split', ?, ?, ?)", (p, row["shelf"], row["context"], row["pallet_id"]))
+            nid = cur.lastrowid
+            conn.execute("INSERT INTO moves(box_id, from_shelf, to_shelf) VALUES(?, NULL, ?)",
+                         (nid, row["shelf"]))
+            new_ids.append(nid)
+        conn.execute("UPDATE boxes SET shelf='archived' WHERE id=?", (m.id,))
+        conn.execute("INSERT INTO moves(box_id, from_shelf, to_shelf) VALUES(?, ?, 'archived')",
+                     (m.id, row["shelf"]))
+        if row["shelf"] == "focus":
+            _displace_focus(conn)
         streak_touch(conn)
-        log_event(conn, "micro_done", id=m.id, continued=m.continued, points=pts)
-    return {"ok": True, "points": pts}
+        log_event(conn, "split", id=m.id, n=len(parts))
+    return {"ok": True, "ids": new_ids}
 
 
 class TimerStart(BaseModel):
@@ -2469,8 +2616,8 @@ def _whatnow(conn):
         "SELECT raw_text FROM boxes WHERE shelf='focus' AND starred=1"
         " AND starred_at IS NOT NULL AND starred_at<=? ORDER BY id", (today,))]
     scary = conn.execute(
-        "SELECT id, micro FROM boxes WHERE shelf='focus' AND scary=1 "
-        "AND micro IS NOT NULL AND micro<>'' ORDER BY id LIMIT 1").fetchone()
+        "SELECT id, raw_text FROM boxes WHERE shelf='focus' AND scary_kind='think' "
+        "ORDER BY id LIMIT 1").fetchone()
     q = []
     if blocked:
         q.append({"act": "⛔ Разблокировать склад: разобрать входящие",
@@ -2482,10 +2629,10 @@ def _whatnow(conn):
                   "url": "/terminal"})
     if scary:
         # Fogg: способность важнее мотивации. У страшной задачи призыв - не она сама,
-        # а два первых шага; целиком её никто начинать не хочет (коробка #311)
-        q.append({"act": "▶ 2 минуты: " + (scary["micro"] or "")[:50],
-                  "why": "не задача целиком - только два первых шага, потом можно бросить",
-                  "url": "/focus_page#micro"})
+        # а «две минуты подумать»; целиком её никто начинать не хочет
+        q.append({"act": "😰 " + (scary["raw_text"] or "")[:50],
+                  "why": "страшная задача спрятана - осталось только подумать две минуты",
+                  "url": "/focus_page"})
     if glow_n:
         q.append({"act": f"✨ Проверить ожидание ({glow_n})",
                   "why": "коробки загорелись: пора чекнуть, дождался ли",
@@ -2593,8 +2740,9 @@ def _hub_bars(conn):
 TIPS = {
     "streak": "🔥 Появилась серия дней. Любое движение коробки засчитывает день. "
               "Каждые 7 дней копится страховка - пропуск закроется сам.",
-    "micro": "😰 У страшной задачи теперь есть кнопка «2 минуты»: очко даётся за "
-             "начало, а не за завершение. Бросить через две минуты - тоже победа.",
+    "micro": "😰 Кнопка «Страшно» теперь есть везде: страшная задача прячется "
+             "целиком, наружу выходит первый шаг «две минуты подумать», а сама "
+             "задача вернётся, только когда по ней пойдёт движение.",
     "recognize": "👁 Коробка, которую ты видишь второй раз, показывает счётчик "
                  "заходов и две быстрые кнопки: «уже неактуально» и «я знаю решение».",
     "roll": "📦 В сундуке появился ящик: крутишь раз в день, выпадает случайная "
@@ -3052,7 +3200,14 @@ def review_data():
         set_flag(conn, "review_rack_done", cleaned)
         all_racks = [dict(r) for r in conn.execute(
             "SELECT * FROM boxes WHERE shelf='rack' ORDER BY context, id")]
-        racks = [r for r in all_racks if str(r["id"]) not in decided_ids]
+        # свежеположенные на стеллаж (в т.ч. из разбора инбокса) получают те же
+        # REVIEW_DAYS тишины, что и решённые внутри пересборки: не переспрашиваем
+        # то, что человек только что осознанно отложил (по дате приезда на стеллаж)
+        fresh_ids = {str(r["box_id"]) for r in conn.execute(
+            f"SELECT box_id, MAX(at) m FROM moves WHERE to_shelf='rack' "
+            f"GROUP BY box_id HAVING date(m) >= date({SQL_TODAY}, '-{REVIEW_DAYS} days')")}
+        racks = [r for r in all_racks
+                 if str(r["id"]) not in decided_ids and str(r["id"]) not in fresh_ids]
         pallets = [dict(r) for r in conn.execute(
             "SELECT * FROM pallets WHERE frozen=0 ORDER BY created_at")]
         for p in pallets:

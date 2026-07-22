@@ -208,15 +208,16 @@ const PASSES=[
    a:[['✅ Дело',x=>route(x,1)],['🚫 Не дело',x=>route(x,2)]]},
   // ЗАМОРОЖЕНО 21.07 (#283/#304): проход «техпроект?» выключен - «Один шаг» едет
   // сразу на проход 4 (робот откидывает задачи, батчинг не пошёл). Разморозка: route(x,3)
-  {q:'Это один конкретный шаг?',hint:'один шаг = сел и сделал · проект = нескольких шагов или пока мутно → уедет в Проекты, там разложишь',
-   a:[['⚡ Один шаг',x=>route(x,4)],['🧱 Проект',x=>ship(x,'pallet_step')]]},
+  {q:'Это один конкретный шаг?',hint:'один шаг = сел и сделал · проект = нескольких шагов или пока мутно → уедет в Проекты, там разложишь · ✂ разбить = 2+ отдельных задач без проекта',
+   a:[['⚡ Один шаг',x=>route(x,4)],['🧱 Проект',x=>ship(x,'pallet_step')],
+      ['✂ Разбить',x=>{splitOpen();return false}]]},
   {q:'Оставить как мысль?',hint:'мысль → сама станет заметкой в Obsidian · мусор исчезает навсегда',
    a:[['💭 Мысль',x=>ship(x,'mind')],['🗑 Мусор',x=>ship(x,'trash')]]},
   {q:'Это для технического проекта?',hint:'техпроект = отдельный репозиторий с кодом (сайт, бот, api) · если да — шаг уедет в инбокс проекта',
    a:[['🤖 Да, техпроект',x=>{techRoute();return false}],['🚫 Нет',x=>route(x,4)]]},
-  {q:'Займёшься на этой неделе?',hint:'да → Фокус (делаю сейчас) · не сейчас → Отложенное: 🤖 сам разложит по контекстам · страшно → спросим про два первых шага',
+  {q:'Займёшься на этой неделе?',hint:'да → Фокус (делаю сейчас) · не сейчас → Отложенное: 🤖 сам разложит по контекстам · страшно → спрячем задачу, вынесем первый шаг',
    a:[['✅ Да',x=>ship(x,'focus')],['🕰 Не сейчас',x=>ship(x,'rack')],
-      ['😰 Страшно',x=>{scaryStep();return false}]]}
+      ['😰 Страшно',x=>{scaryHideCur();return false}]]}
 ];
 // авто-триаж: какой ответ на ТЕКУЩЕМ вопросе подсказывает фоновая LLM-классификация
 // (cur.ai_suggest = step|project|thought|trash, проставляется сервером асинхронно после захвата)
@@ -517,31 +518,41 @@ async function techRouteConfirm(proj){
     $('hint').textContent='⚠ не отправилось ('+e.message+')';
   }
 }
-// 😰 Страшная задача: единственный рычаг при низкой мотивации - способность.
-// Спрашиваем не «когда сделаешь», а «что тут можно сделать за две минуты».
-function scaryStep(){
-  if(!cur)return;
-  resetMore();
-  $('question').textContent='Что можно сделать за 2 минуты, чтобы это сдвинулось?';
-  $('hint').textContent='не решить целиком - только первый крошечный шаг: открыть, найти номер, написать одну строку';
-  $('btns').innerHTML='<input id="micro" style="flex:1;min-width:260px;padding:10px 12px;font-size:15px" '
-    +'placeholder="например: открыть телеграм и найти чат"><button onclick="scaryConfirm()">▶ Так и запишем</button>'
-    +'<button class="b-ghost" onclick="nextItem()">← Отмена</button>';
-  const inp=$('micro');
-  inp.focus();
-  inp.onkeydown=e=>{if(e.key==='Enter')scaryConfirm()};
-}
-async function scaryConfirm(){
-  if(flying)return;
-  const v=$('micro').value.trim();
-  if(!v){$('micro').focus();return}
+// 😰 Страшно: задача прячется целиком на полку scary_hold, наружу выйдет
+// авто-шаг «две минуты подумать». Никакого ввода на разборе - просто прячем.
+async function scaryHideCur(){
+  if(flying||!cur)return;
   flying=true;
   try{
-    await api('/micro_set',{id:cur.id,text:v});
-    logEv('scary_micro',{box:cur.id,text:cur.raw_text,micro:v});
-    beep(620,.12);window.juice&&juice('ship');
+    await api('/scary',{id:cur.id});
+    logEv('scary_hide',{box:cur.id,text:cur.raw_text});
+    beep(560,.12);window.juice&&juice('ship');
     P[pass].items.shift();flyNext();
-  }catch(e){flying=false;$('hint').textContent='⚠ не сохранилось ('+e.message+')'}
+  }catch(e){flying=false;$('hint').textContent='⚠ не спряталось ('+e.message+')'}
+}
+// ✂ Разбить на 2+ задач: части остаются в инбоксе и разбираются по отдельности
+function splitOpen(){
+  if(!cur)return;
+  resetMore();
+  $('question').textContent='Разбить на отдельные задачи (по строчке):';
+  $('hint').textContent='одна строка = одна задача · минимум две · части попадут во входящие и разберутся по отдельности';
+  $('btns').innerHTML='<textarea id="splitta" rows="4" style="flex:1;min-width:280px;padding:10px 12px;font-size:15px" '
+    +'placeholder="первая задача&#10;вторая задача"></textarea>'
+    +'<button onclick="splitConfirm()">✂ Разбить</button>'
+    +'<button class="b-ghost" onclick="nextItem()">← Отмена</button>';
+  const inp=$('splitta');inp.focus();
+}
+async function splitConfirm(){
+  if(flying)return;
+  const parts=$('splitta').value.split('\n').map(s=>s.trim()).filter(Boolean);
+  if(parts.length<2){$('splitta').focus();$('hint').textContent='нужно минимум две задачи';return}
+  flying=true;
+  try{
+    await api('/split',{id:cur.id,parts});
+    logEv('split',{box:cur.id,text:cur.raw_text,n:parts.length});
+    beep(600,.12);window.juice&&juice('ship');
+    P[pass].items.shift();flyNext();
+  }catch(e){flying=false;$('hint').textContent='⚠ не разбилось ('+e.message+')'}
 }
 function addBtn(label,onclick){
   const b=document.createElement('button');

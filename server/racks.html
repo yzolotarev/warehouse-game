@@ -186,6 +186,8 @@ function render(){
         <button class="b-ghost" style="font-size:12.5px;padding:8px 12px" onclick="renameCur()">✏️ переименовать</button>
         <button class="b-ghost" style="font-size:12.5px;padding:8px 12px" onclick="streetCur()">${b.street?'🚶 уличная ✓ · убрать':'🚶 На улицу'}</button>
         <button class="b-ghost" style="font-size:12.5px;padding:8px 12px" title="жду человека/события — уйдёт в Ожидание, напомнит само" onclick="act('waiting')">⏳ Ожидание</button>
+        <button class="b-ghost" style="font-size:12.5px;padding:8px 12px" title="слишком страшно/крупно — спрятать и вынести первый шаг" onclick="scaryCur()">😰 Страшно</button>
+        <button class="b-ghost" style="font-size:12.5px;padding:8px 12px" title="разбить на 2+ отдельных задач без проекта" onclick="splitCur()">✂ Разбить</button>
       </div>
     </div>
   </div>`;
@@ -242,6 +244,20 @@ function skip(){
   sideGlow('var(--dim)','Лежит');
   const c=$('#c');c.classList.add('flyl');beep(300,.06);
   setTimeout(()=>{items.push(items.shift());render()},260);
+}
+// 😰 страшно: коробка со стеллажа прячется, вернётся сюда же после цепочки шагов
+async function scaryCur(){
+  const b=items[0];if(!b)return;
+  try{await api('/scary',{id:b.id});beep(560,.12);items.shift();setTimeout(render,120)}catch(e){}
+}
+// ✂ разбить: части остаются на стеллаже (в том же контексте)
+async function splitCur(){
+  const b=items[0];if(!b)return;
+  const raw=prompt('Разбить на задачи через «;» (минимум две):','');
+  if(raw===null)return;
+  const parts=raw.split(';').map(s=>s.trim()).filter(Boolean);
+  if(parts.length<2){alert('нужно минимум две задачи');return}
+  try{await api('/split',{id:b.id,parts});beep(600,.12);items.shift();setTimeout(render,120)}catch(e){}
 }
 async function act(to){
   const b=items[0];

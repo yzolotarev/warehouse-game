@@ -146,7 +146,8 @@ function render(){
         <span>СЛЕДУЮЩИЙ ШАГ:</span>${revBtn}</div>`
       +queue.map(s=>`<div class="step">🔹 ${esc(s.raw_text)}
         <span class="wbtn" title="взять в фокус — делать сейчас" onclick="stepFocus(${s.id})">🎯</span>
-        <span class="wbtn" title="жду ответа/события — в Ожидание" onclick="stepWait(${s.id})">⏳</span></div>`).join('')
+        <span class="wbtn" title="жду ответа/события — в Ожидание" onclick="stepWait(${s.id})">⏳</span>
+        <span class="wbtn" title="страшно — спрятать и вынести первый шаг" onclick="stepScary(${s.id})">😰</span></div>`).join('')
     :(inFocus.length?'':`<div class="crit" style="color:var(--sand);margin-top:10px">🥛 очередь пуста — задай следующий шаг, иначе проект встанет</div>`);
   const idle=p.idle_days>7?`<div class="crit" style="color:var(--sand)">🕸 без движения ${p.idle_days} дн. (месяц — и уедет в морозилку)</div>`:'';
   const series=p.done_today?`<div class="crit" style="color:var(--vio)">🔥 серия: сегодня по этой паллете уже сделано ${p.done_today} — следующий шаг даст +${seriesPts} сверху</div>`:
@@ -352,6 +353,11 @@ async function stepFocus(id){
   try{await api('/move',{id,to:'focus'})}catch(e){return}
   focusWarn();
   beep(560,.1);window.juice&&juice('focus');load();
+}
+async function stepScary(id){
+  // страшный шаг прячется, вернётся сюда же (на pallet_step) после цепочки
+  try{await api('/scary',{id})}catch(e){return}
+  beep(560,.1);window.juice&&juice('ship');load();
 }
 // ── ревью очереди проекта: тот же конвейер, что ревизия стеллажа, но по
 // шагам конкретного проекта — «в фокус / оставить / пофиг» по одному ──
